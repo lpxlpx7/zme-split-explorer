@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#f5f5f7" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" />
+    <title>ZME Split Explorer</title>
+    <link rel="icon" type="image/png" href="./favicon.png" />
+    <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
+  </head>
+  <body>
+    <div id="map" role="application" aria-label="ZME Split Explorer map"></div>
+
+    <div class="topbar">
+      <div class="glass topbar-inner">
+        <div class="segmented" id="strata" role="group" aria-label="Altitude stratum">
+          <span class="thumb"></span>
+          <button data-s="LO">Low</button>
+          <button data-s="HI">High</button>
+          <button data-s="UH">Ultra High</button>
+        </div>
+        <span class="topbar-alt" id="strata-alt"></span>
+      </div>
+    </div>
+
+    <aside class="panel glass" aria-label="ZME status">
+      <div class="grabber" aria-hidden="true"></div>
+      <header class="panel-head">
+        <img class="app-icon" src="./zme_logo.png" alt="ZME ARTCC" width="40" height="40" />
+        <div class="titles">
+          <h1>ZME Split Explorer</h1>
+          <p>Memphis ARTCC · VATSIM</p>
+        </div>
+        <span class="live" id="live">Connecting…</span>
+      </header>
+
+      <form id="search" class="search" autocomplete="off">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+        <input type="search" placeholder="Find aircraft by callsign" aria-label="Find aircraft by callsign" spellcheck="false" />
+      </form>
+
+      <div id="preview-banner" class="banner" hidden>
+        <span>Preview mode (not live)</span>
+        <button class="link" data-action="exit-preview">Exit</button>
+      </div>
+
+      <div class="status" id="status"></div>
+
+      <div class="segmented small" id="tabs" role="group" aria-label="View">
+        <span class="thumb"></span>
+        <button data-t="controllers">Controllers</button>
+        <button data-t="sectors">Sectors</button>
+        <button data-t="neighbors">Neighbors</button>
+      </div>
+
+      <div class="panel-body" id="body"></div>
+
+      <footer class="panel-foot">
+        <button class="btn tinted" data-action="open-preview">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>
+          Preview splits
+        </button>
+        <button class="btn" data-action="recenter">Recenter</button>
+      </footer>
+      <p class="fineprint">For VATSIM only. Split rules follow the ZME Enroute SOP V1.3 (12/25/25). VATSIM data refreshes every 15 seconds.</p>
+    </aside>
+
+    <div id="tooltip" class="tooltip glass" hidden></div>
+    <div id="aircraft-card" class="aircraft-card glass" hidden></div>
+    <div id="preview-sheet" class="sheet glass" aria-label="Preview splits"></div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
