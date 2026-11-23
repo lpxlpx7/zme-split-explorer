@@ -1,12 +1,15 @@
 /**
- * Self-hosted server: serves the built site (dist/) and the manual-staffing API.
+ * Self-hosted server: serves the built site (dist/) and the planned-splits API.
  *
- *   GET  /api/overrides   public  → { positions, admin }   (admin = the Bearer token is valid)
- *   PUT  /api/overrides   Bearer  → replace the list       (only ADMIN_TOKEN may write)
+ *   GET  /api/plans   public  → { plans, live, admin }   (admin = the Bearer token is valid)
+ *   PUT  /api/plans   Bearer  → replace both             (only ADMIN_TOKEN may write)
  *
- * Env: ADMIN_TOKEN (required, >= 16 chars) · PORT=8787 · HOST=127.0.0.1 · DATA_FILE=data/overrides.json
+ * A plan (event) says, for a time window, which positions are expected and who covers which sector;
+ * its per-position notes are only returned to the admin. `live` holds sector assignments the admin
+ * makes for right now (they win over the event). Who is online always comes from VATSIM.
+ * Env: ADMIN_TOKEN (required, >= 16 chars) · PORT=8787 · HOST=127.0.0.1 · DATA_FILE=data/plans.json
  *      STATIC_DIR=dist · ALLOWED_ORIGIN (only if the site is served from a different origin)
- * Entries always expire (max 48 h), so a forgotten one clears itself.
+ * Finished plans are dropped automatically.
  */
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { createReadStream } from 'node:fs';
@@ -14,7 +17,9 @@ import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
 
-interface Override { position: string; expires: number }
+interface Plan { id: string; name: string; start: number; end: number; positions: string[]; assign: [string, string][]; notes: Record<string, string> }
+interface Live { assign: [string, string][]; expires: number }
+interface Store { plans: Plan[]; live: Live | null }
 
 // Paths are relative to the project root (not the cwd), so any process manager can start this.
 const ROOT = resolve(import.meta.dirname, '..');
@@ -27,11 +32,13 @@ if (TOKEN.length < 16) {
 }
 const PORT = Number(process.env.PORT ?? 8787);
 const HOST = process.env.HOST ?? '127.0.0.1';
-const DATA_FILE = resolve(ROOT, process.env.DATA_FILE ?? 'data/overrides.json');
+const DATA_FILE = resolve(ROOT, process.env.DATA_FILE ?? 'data/plans.json');
 const STATIC_DIR = resolve(ROOT, process.env.STATIC_DIR ?? 'dist');
 const ORIGIN = process.env.ALLOWED_ORIGIN;
-const MAX_TTL_MS = 48 * 3_600_000;
-const MAX_ENTRIES = 40;
+const MAX_PLAN_MS = 72 * 3_600_000;
+const MAX_AHEAD_MS = 90 * 86_400_000;
+const MAX_PLANS = 50;
+const MAX_LIVE_MS = 48 * 3_600_000;
 
 const sha = (s: string) => createHash('sha256').update(s).digest();
 const tokenHash = sha(TOKEN);
@@ -40,38 +47,85 @@ const isAdmin = (req: IncomingMessage) => {
   return !!given && timingSafeEqual(sha(given), tokenHash);
 };
 
-async function load(): Promise<Override[]> {
+async function load(): Promise<Store> {
   try {
-    return (JSON.parse(await readFile(DATA_FILE, 'utf8')) as Override[]).filter((o) => o.expires > Date.now());
+    const raw = JSON.parse(await readFile(DATA_FILE, 'utf8')) as Partial<Store>;
+    const now = Date.now();
+    return {
+      plans: (raw.plans ?? []).filter((p) => p.end > now).map((p) => ({ ...p, name: p.name ?? 'Event', notes: p.notes ?? {} })),
+      live: raw.live && raw.live.expires > now ? raw.live : null,
+    };
   } catch {
-    return [];
+    return { plans: [], live: null };
   }
 }
 
-async function save(list: Override[]) {
+async function save(store: Store) {
   await mkdir(dirname(DATA_FILE), { recursive: true });
   const tmp = `${DATA_FILE}.tmp`;
-  await writeFile(tmp, JSON.stringify(list));
+  await writeFile(tmp, JSON.stringify(store));
   await rename(tmp, DATA_FILE); // atomic: a crash never leaves a half-written file
 }
 
-function sanitize(input: unknown): Override[] | null {
-  if (!Array.isArray(input) || input.length > MAX_ENTRIES) return null;
-  const now = Date.now();
+const POS = /^\d{2}$/;
+const SECTOR = /^(LO|HI|UH)-\d{2}$/;
+
+function sanitizeAssign(input: unknown, allowed?: string[]): [string, string][] | null {
+  if (!Array.isArray(input) || input.length > 80) return null;
+  const out: [string, string][] = [];
   const seen = new Set<string>();
-  const out: Override[] = [];
-  for (const o of input) {
-    const position = typeof o?.position === 'string' ? o.position : '';
-    const expires = Number(o?.expires);
-    if (!/^\d{2}$/.test(position) || !Number.isFinite(expires)) return null;
-    if (seen.has(position) || expires <= now) continue;
-    seen.add(position);
-    out.push({ position, expires: Math.min(expires, now + MAX_TTL_MS) });
+  for (const a of input) {
+    if (!Array.isArray(a) || typeof a[0] !== 'string' || typeof a[1] !== 'string' || !SECTOR.test(a[0]) || !POS.test(a[1])) return null;
+    if (seen.has(a[0]) || (allowed && !allowed.includes(a[1]))) continue;
+    seen.add(a[0]);
+    out.push([a[0], a[1]]);
   }
   return out;
 }
 
-function readBody(req: IncomingMessage, limit = 16_384): Promise<unknown> {
+const clean = (v: unknown, max: number) => (typeof v === 'string' ? v.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, max) : '');
+
+function sanitizeLive(input: unknown): Live | null | undefined {
+  if (input === null || input === undefined) return null;
+  const l = input as { assign?: unknown; expires?: unknown };
+  const now = Date.now();
+  const expires = Number(l.expires);
+  const assign = sanitizeAssign(l.assign);
+  if (!assign || !Number.isFinite(expires)) return undefined; // malformed
+  if (expires <= now || !assign.length) return null;
+  return { assign, expires: Math.min(expires, now + MAX_LIVE_MS) };
+}
+
+/** Validate the whole list; null if anything is malformed. Finished plans are dropped. */
+function sanitize(input: unknown): Plan[] | null {
+  if (!Array.isArray(input) || input.length > MAX_PLANS) return null;
+  const now = Date.now();
+  const ids = new Set<string>();
+  const out: Plan[] = [];
+  for (const p of input) {
+    const id = typeof p?.id === 'string' ? p.id : '';
+    const start = Number(p?.start);
+    const end = Number(p?.end);
+    if (!/^[a-z0-9]{1,24}$/.test(id) || ids.has(id)) return null;
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start || end - start > MAX_PLAN_MS || start > now + MAX_AHEAD_MS) return null;
+    if (!Array.isArray(p.positions) || p.positions.length > 40 || !p.positions.every((x: unknown) => typeof x === 'string' && POS.test(x))) return null;
+    const positions = [...new Set<string>(p.positions)];
+    const assign = sanitizeAssign(p.assign, positions);
+    const name = clean(p.name, 60);
+    if (!assign || !name) return null;
+    const notes: Record<string, string> = {};
+    if (p.notes && typeof p.notes === 'object')
+      for (const [k, v] of Object.entries(p.notes as Record<string, unknown>)) {
+        const note = clean(v, 120);
+        if (positions.includes(k) && note) notes[k] = note;
+      }
+    ids.add(id);
+    if (end > now) out.push({ id, name, start, end, positions, assign, notes });
+  }
+  return out;
+}
+
+function readBody(req: IncomingMessage, limit = 131_072): Promise<unknown> {
   return new Promise((ok, fail) => {
     let size = 0;
     const chunks: Buffer[] = [];
@@ -118,15 +172,22 @@ async function serveStatic(url: URL, res: ServerResponse) {
 createServer(async (req, res) => {
   try {
     const url = new URL(req.url ?? '/', 'http://x');
-    if (url.pathname === '/api/overrides') {
+    if (url.pathname === '/api/plans') {
       if (req.method === 'OPTIONS') return send(res, 204, null);
-      if (req.method === 'GET') return send(res, 200, { positions: await load(), admin: isAdmin(req) });
+      if (req.method === 'GET') {
+        const admin = isAdmin(req);
+        const { plans, live } = await load();
+        // Notes are for the admin only.
+        return send(res, 200, { plans: admin ? plans : plans.map(({ notes: _, ...p }) => p), live, admin });
+      }
       if (req.method === 'PUT') {
         if (!isAdmin(req)) return send(res, 401, { error: 'unauthorized' });
-        const positions = sanitize(((await readBody(req)) as { positions?: unknown } | null)?.positions);
-        if (!positions) return send(res, 400, { error: 'invalid body' });
-        await save(positions);
-        return send(res, 200, { positions, admin: true });
+        const body = (await readBody(req)) as { plans?: unknown; live?: unknown } | null;
+        const plans = sanitize(body?.plans);
+        const live = sanitizeLive(body?.live);
+        if (!plans || live === undefined) return send(res, 400, { error: 'invalid body' });
+        await save({ plans, live });
+        return send(res, 200, { plans, live, admin: true });
       }
       return send(res, 405, { error: 'method not allowed' });
     }

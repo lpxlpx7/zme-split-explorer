@@ -37,15 +37,31 @@ export interface Ownership {
 /**
  * Work out who owns every piece of airspace.
  *
+ * - `assign` (sector key → position) overrides the rules below for that sector while the position is
+ *   online; LO/UH under a reassigned HI sector follow it like any other HI owner.
+ * - `exclusive` positions work only what `assign` gives them; the rules below skip them.
  * - Exactly one position online → it works all of ZME.
  * - Only combined positions (22/63/46/44) online → combined 2/3/4-way area split for all altitudes.
  * - Otherwise each stratum resolves independently: the sector's own position, then its 4/3/2-way
  *   split owner, then the stratum primary (LO 05, HI 22, UH 33). HI then falls back to the combined
  *   split; LO/UH fall back to the HI owner overhead. HI left uncovered takes the UH/LO owner there.
  */
-export function computeOwnership(pieces: Piece[], online: Set<string>): Ownership {
+export function computeOwnership(
+  pieces: Piece[],
+  online: Set<string>,
+  assign: Map<string, string> = new Map(),
+  /** Positions that work exactly their assigned sectors: the SOP never hands them anything else. */
+  exclusive: Set<string> = new Set(),
+): Ownership {
   const owners = new Map<string, string | null>();
-  const first = (...ids: (string | undefined)[]) => ids.find((id) => id && online.has(id)) ?? null;
+  /** A hand-made assignment wins over the SOP, but only while its position is online. */
+  const forced = (p: Piece) => {
+    const a = assign.get(sectorKey(p.stratum, p.sector));
+    return a && online.has(a) ? a : null;
+  };
+  const first = (...ids: (string | undefined)[]) => ids.find((id) => id && online.has(id) && !exclusive.has(id)) ?? null;
+  /** An owner that may be inherited by fallback (not an exclusive position). */
+  const free = (id: string | null | undefined) => (id && !exclusive.has(id) ? id : null);
   const combined = (r: Region) =>
     first(...COMBINED_SPLITS.map((split) => split[r]), COMBINED_PRIMARY);
 
@@ -60,7 +76,7 @@ export function computeOwnership(pieces: Piece[], online: Set<string>): Ownershi
     return first(p.sector, ...(area ? split.ways.map((w) => w[area]) : []), split.primary);
   };
 
-  if (online.size === 1) {
+  if (online.size === 1 && !exclusive.size) {
     // A single position online works all of ZME, whichever one it is.
     const only = [...online][0];
     for (const p of pieces) owners.set(p.pid, only);
@@ -68,11 +84,12 @@ export function computeOwnership(pieces: Piece[], online: Set<string>): Ownershi
     // HI first: LO/UH depend on it.
     const ordered = [...pieces].sort((a, b) => Number(b.stratum === 'HI') - Number(a.stratum === 'HI'));
     for (const p of ordered) {
-      let owner: string | null;
-      if (mode === 'combined') owner = combined(p.region);
+      let owner: string | null = forced(p);
+      if (owner) { /* assigned by hand */ }
+      else if (mode === 'combined') owner = combined(p.region);
       else if (p.stratum === 'HI') owner = stratumChain(p) ?? combined(p.region);
       else {
-        const above = p.hi ? owners.get(p.hi) : undefined;
+        const above = p.hi ? free(owners.get(p.hi)) : null;
         owner = stratumChain(p) ?? above ?? combined(p.region);
       }
       owners.set(p.pid, mode === 'offline' ? null : owner);
@@ -89,11 +106,11 @@ export function computeOwnership(pieces: Piece[], online: Set<string>): Ownershi
         owners.set(p.pid, owner);
       }
       // …then give uncovered LO/UH to that HI owner.
-      for (const p of pieces) if (p.stratum !== 'HI' && !owners.get(p.pid) && p.hi) owners.set(p.pid, owners.get(p.hi) ?? null);
+      for (const p of pieces) if (p.stratum !== 'HI' && !owners.get(p.pid) && p.hi) owners.set(p.pid, free(owners.get(p.hi)));
       // LO beyond the HI boundary has nothing overhead: keep it with the rest of its sector.
       for (const p of pieces) {
         if (owners.get(p.pid)) continue;
-        const sibling = pieces.find((q) => q.stratum === p.stratum && q.sector === p.sector && owners.get(q.pid));
+        const sibling = pieces.find((q) => q.stratum === p.stratum && q.sector === p.sector && free(owners.get(q.pid)));
         if (sibling) owners.set(p.pid, owners.get(sibling.pid)!);
       }
     }

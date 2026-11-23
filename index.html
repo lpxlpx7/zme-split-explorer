@@ -42,7 +42,7 @@
             <h1>ZME Split Explorer</h1>
             <p><span class="live" id="live">Connecting…</span></p>
           </div>
-          <button class="icon-btn tinted" data-action="open-manual" id="manual-btn" aria-label="Manual positions" title="Manual positions" hidden></button>
+          <button class="icon-btn tinted" data-action="open-plans" id="plans-btn" aria-label="Planned splits" title="Planned splits" hidden></button>
           <button class="icon-btn tinted" data-action="open-preview" id="preview-btn" aria-label="Preview splits" title="Preview splits"></button>
         </header>
         <form id="search" class="search" autocomplete="off" role="search">
@@ -53,7 +53,7 @@
 
       <div class="panel-scroll" id="panel-scroll">
         <div id="preview-banner" class="banner" hidden>
-          <span>Preview mode · not live</span>
+          <span id="preview-banner-text">Preview mode · not live</span>
           <button class="link" data-action="exit-preview">Exit</button>
         </div>
         <div class="status" id="status"></div>
@@ -75,6 +75,8 @@
 
     <div id="tooltip" class="tooltip material" hidden></div>
     <div id="aircraft-card" class="aircraft-card material" hidden></div>
+    <div id="assign-menu" class="assign-menu material" role="menu" hidden></div>
+    <div id="edit-hint" class="edit-hint material" hidden>Click a sector to choose who works it</div>
 
     <div id="preview-backdrop" class="backdrop" data-action="close-preview"></div>
     <aside id="preview-sheet" class="sheet material" aria-label="Preview splits" aria-modal="true" role="dialog">

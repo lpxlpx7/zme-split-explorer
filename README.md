@@ -17,8 +17,9 @@ The whole project is TypeScript: the app (`src/`) and the data build (`tools/`, 
 ## How it works
 
 - **Live data**: polls `https://data.vatsim.net/v3/vatsim-data.json` every 15 s. `MEM_*_CTR`
-  controllers are matched to a sector by frequency first, then by the number in the callsign.
-  A bare `MEM_CTR` counts as Razorback (22).
+  controllers are matched by the number in the callsign first (two digits, or the first two of three:
+  `MEM_221_CTR` → 22), then by frequency (relief callsigns like `MEM_1_CTR`). A bare `MEM_CTR` counts as
+  Razorback (22).
 - **ZME split logic** (`src/ownership.ts`, rules from ZME Enroute SOP V1.3 §3-2):
   - If only combined positions (22/63/46/44) are online, the combined 2/3/4-way area split applies at all altitudes.
   - Otherwise each stratum is resolved separately. A sector goes to its own position if that is online,
@@ -30,12 +31,17 @@ The whole project is TypeScript: the app (`src/`) and the data build (`tools/`, 
     chains exactly (controllers matched by frequency, then callsign number).
   - The others only have an outline on VATGlasses: their centre controllers share the strip; with
     several online the map shows the first and marks it *approx.*
-- **Preview**: toggle positions or pick a preset to see a split without live data.
+- **Map labels**: every owner's position number, name and frequency is drawn on the map at all times
+  (in its own sector when it works it, otherwise in the biggest sector it has).
+- **Preview** (everyone, this device only): toggle positions or pick a preset, then hand any sector to any
+  of those positions (list in the sheet, or click a sector on the map on a computer). The setup is kept in
+  the browser's local storage and never sent anywhere. Link straight to it with `#preview`. Preview shows
+  no aircraft and no callsigns (positions are named instead), and no live adjacent-ARTCC controllers.
 
-## Self-hosting & manual positions (private editing)
+## Self-hosting & planned splits (admin)
 
 Everything runs on your own server. `server/index.ts` is a dependency-free Node server that serves the
-built site and the API (`/api/overrides`); manual positions are stored in `data/overrides.json`.
+built site and the API (`/api/plans`); plans are stored in `data/plans.json`.
 
 ```bash
 npm ci
@@ -47,10 +53,19 @@ Put nginx/Caddy with HTTPS in front (proxy everything to 127.0.0.1:8787) - the t
 so never serve it over plain HTTP. Env: `HOST`, `PORT`, `DATA_FILE`, `STATIC_DIR`, `ALLOWED_ORIGIN`
 (only needed if the site is served from a different origin than the API).
 
-Manual positions are for event days when a split is staffed but not on the VATSIM feed. Everyone sees
-the result; only the token holder can edit. Open the site with `#admin` appended, enter the token once; a
-lock button then appears in the header. Toggle positions on and choose how long they last (they expire on
-their own, max 48 h); a real login for the same position takes over automatically. Without
+Open the site with `#admin` appended and enter the token once; a calendar button then appears in the header.
+Who is online **always** comes from VATSIM; the admin only decides who covers which sector.
+
+- **Events**: a name, a time window (entered in UTC or local time, the other zone shown next to it; up to
+  72 h, up to 90 days ahead) and the expected positions. For each position choose **Auto** (the SOP split
+  among the Auto positions) or **pick its sectors** (it then covers exactly those, nothing else), and add an
+  optional note. Notes are only ever sent to the admin. Each event has a **Preview** button that loads it into
+  your local Preview. Finished events are deleted automatically; overlapping events: the later start wins.
+- **Live edits**: sector assignments for right now, saved immediately and shown to everyone. They win over a
+  running event, sector by sector, and expire after the time you choose (1-24 h).
+
+Every assignment (event or live) only applies while its position is online on VATSIM; otherwise that sector
+falls back to the event, then to the SOP. Editing an event never changes the map. Without
 `VITE_OVERRIDES_URL` the feature is absent.
 
 ## Airspace data

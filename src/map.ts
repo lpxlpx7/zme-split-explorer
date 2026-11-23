@@ -29,6 +29,8 @@ export interface MapView {
   setNeighborColors(colors: Map<string, string | null>): void;
   setNeighborsVisible(v: boolean): void;
   setAircraft(fc: GeoJSON.FeatureCollection): void;
+  /** Points with stratum/id/name/freq: who works each block of airspace, always on screen. */
+  setOwnerLabels(fc: GeoJSON.FeatureCollection): void;
   setTheme(dark: boolean): void;
 }
 
@@ -71,6 +73,7 @@ export function createMap(container: HTMLElement, data: MapData, dark: boolean, 
   let neighbors = data.neighbors;
   let neighborsVisible = true;
   let aircraft = EMPTY;
+  let ownerLabels = EMPTY;
 
   const install = () => {
     // Cool, low-contrast neutrals; colour is reserved for ownership.
@@ -86,6 +89,7 @@ export function createMap(container: HTMLElement, data: MapData, dark: boolean, 
     map.addSource('labels', { type: 'geojson', data: data.labels });
     map.addSource('boundary', { type: 'geojson', data: data.boundary });
     map.addSource('aircraft', { type: 'geojson', data: aircraft });
+    map.addSource('owner-labels', { type: 'geojson', data: ownerLabels });
 
     const fStratum = stratumFilter(stratum);
     const vis = neighborsVisible ? 'visible' : 'none';
@@ -114,6 +118,27 @@ export function createMap(container: HTMLElement, data: MapData, dark: boolean, 
       id: 'sector-labels', type: 'symbol', source: 'labels', filter: fStratum, minzoom: 5.2,
       layout: { 'text-field': ['get', 'sector'], 'text-font': FONT, 'text-size': ['interpolate', ['linear'], ['zoom'], 5.2, 11, 8, 14], 'text-allow-overlap': false },
       paint: { 'text-color': t.text, 'text-halo-color': t.halo, 'text-halo-width': 1.4, 'text-opacity': 0.85 },
+    });
+    // Above the sector numbers, so where they collide the owner label wins.
+    map.addLayer({
+      id: 'owner-labels', type: 'symbol', source: 'owner-labels', filter: fStratum,
+      layout: {
+        'text-field': [
+          'format',
+          ['get', 'id'], { 'font-scale': 1.15 },
+          '\n', {},
+          ['get', 'name'], { 'font-scale': 0.92 },
+          '\n', {},
+          ['get', 'freq'], { 'font-scale': 0.92 },
+        ],
+        'text-font': FONT,
+        'text-size': ['interpolate', ['linear'], ['zoom'], 4, 11, 8, 15],
+        'text-line-height': 1.1,
+        'text-allow-overlap': true,
+        'text-ignore-placement': false,
+        'symbol-sort-key': ['get', 'rank'],
+      },
+      paint: { 'text-color': t.text, 'text-halo-color': t.halo, 'text-halo-width': 1.6 },
     });
     map.addLayer({
       id: 'artcc-labels', type: 'symbol', source: 'artccs', filter: ['==', ['get', 'kind'], 'label'],
@@ -144,7 +169,7 @@ export function createMap(container: HTMLElement, data: MapData, dark: boolean, 
       if (!map.getLayer('pieces-fill')) return;
       const f = stratumFilter(s);
       map.setFilter('pieces-fill', ['all', f, ['!=', ['get', 'hidden'], true]] as FilterSpecification);
-      for (const id of ['sectors-line', 'sector-labels', 'neighbors-fill', 'neighbors-line']) map.setFilter(id, f);
+      for (const id of ['sectors-line', 'sector-labels', 'owner-labels', 'neighbors-fill', 'neighbors-line']) map.setFilter(id, f);
       map.setFilter('boundary-line', boundaryFilter(s));
     },
     setPieceColors(colors) {
@@ -162,6 +187,10 @@ export function createMap(container: HTMLElement, data: MapData, dark: boolean, 
     setAircraft(fc) {
       aircraft = fc;
       (map.getSource('aircraft') as GeoJSONSource | undefined)?.setData(fc);
+    },
+    setOwnerLabels(fc) {
+      ownerLabels = fc;
+      (map.getSource('owner-labels') as GeoJSONSource | undefined)?.setData(fc);
     },
     setTheme(d) {
       if (d === isDark) return;

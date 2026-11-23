@@ -3,9 +3,10 @@ import type { ColorBook } from '../colors';
 import type { NeighborController, NeighborFacility, NeighborOwner, NeighborPiece } from '../neighbors';
 import type { Ownership, Piece } from '../ownership';
 import { POSITIONS, SECTORS, SECTOR_BY_KEY, STRATA, STRATUM_INFO, sectorKey, type Sector, type Stratum } from '../sectors';
-import type { Override } from '../manual';
+import { fmtRange, fmtTime, localZoneName, toInput, type Plan, type Tz } from '../plans';
 import type { OnlineController, VatsimPilot } from '../vatsim';
 import { icons } from './icons';
+import { PALETTE } from '../colors';
 
 export interface ViewModel {
   stratum: Stratum;
@@ -19,6 +20,8 @@ export interface ViewModel {
   neighborPieces: NeighborPiece[];
   neighborCtrls: NeighborController[];
   neighborOwners: Map<string, NeighborOwner>;
+  /** Live mode: the event in force and live edits, with how many of their assignments apply (position online). */
+  plan: { plan: Plan | null; applied: number; liveApplied: number; liveUntil: number | null } | null;
 }
 
 export const esc = (s: unknown) =>
@@ -29,7 +32,10 @@ export function swatch(color: string | null) {
 }
 
 export function ownerCallsign(vm: ViewModel, id: string) {
-  return vm.controllers.find((c) => c.position === id)?.callsign ?? POSITIONS.get(id)?.callsign ?? `MEM_${id}_CTR`;
+  const c = vm.controllers.find((x) => x.position === id);
+  // Preview positions have no callsign: name the position instead.
+  if (c?.preview) return `${id} ${POSITIONS.get(id)?.name ?? ''}`.trim();
+  return c?.callsign ?? POSITIONS.get(id)?.callsign ?? `MEM_${id}_CTR`;
 }
 
 const duration = (logon: Date) => {
@@ -37,10 +43,6 @@ const duration = (logon: Date) => {
   return mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins}m`;
 };
 
-export const remaining = (until: Date) => {
-  const mins = Math.max(0, Math.round((until.getTime() - Date.now()) / 60000));
-  return `${mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins}m`} left`;
-};
 
 // ─── Status ──────────────────────────────────────────────────────────────────
 export function renderStatus(vm: ViewModel) {
@@ -61,8 +63,13 @@ export function renderStatus(vm: ViewModel) {
     title = 'Stratified split';
     sub = STRATA.map((s) => `${s} ${count(s)}-way`).join(' · ');
   }
+  const st = vm.plan;
+  const plan = [
+    st?.plan && st.applied ? `<div class="status-plan">${icons.calendar}${esc(st.plan.name)} · until ${esc(fmtTime(st.plan.end, 'utc', false))}</div>` : '',
+    st?.liveApplied && st.liveUntil ? `<div class="status-plan live-edit">${icons.sliders}Adjusted live · until ${esc(fmtTime(st.liveUntil, 'utc', false))}</div>` : '',
+  ].join('');
   return `<div class="status-icon ${o.mode}">${o.mode === 'offline' ? icons.moon : icons.radar}</div>
-    <div class="status-text"><div class="status-title">${esc(title)}</div><div class="status-sub">${esc(sub)}</div></div>`;
+    <div class="status-text"><div class="status-title">${esc(title)}</div><div class="status-sub">${esc(sub)}</div>${plan}</div>`;
 }
 
 // ─── Controllers tab ─────────────────────────────────────────────────────────
@@ -85,8 +92,8 @@ export function renderControllers(vm: ViewModel) {
       return `<article class="ctrl" style="--c:${vm.colors.get(c.position)}">
         <div class="ctrl-head">
           <span class="ctrl-badge">${c.position}</span>
-          <div class="ctrl-id"><div class="ctrl-callsign">${esc(c.callsign)}</div><div class="ctrl-name">${esc(pos?.name ?? '')} · ${esc(c.preview ? 'Preview' : c.manual ? 'Staffed manually' : c.name)}${c.rating ? ` · ${esc(c.rating)}` : ''}</div></div>
-          <div class="ctrl-freq"><div>${esc(c.frequency)}</div><small>${c.preview ? 'Preview' : c.manual ? `Manual${c.until ? ` · ${remaining(c.until)}` : ''}` : duration(c.logon)}</small></div>
+          <div class="ctrl-id"><div class="ctrl-callsign">${esc(c.callsign)}</div><div class="ctrl-name">${c.preview ? 'Preview' : `${esc(pos?.name ?? '')} · ${esc(c.name)}`}${c.rating ? ` · ${esc(c.rating)}` : ''}</div></div>
+          <div class="ctrl-freq"><div>${esc(c.frequency)}</div><small>${c.preview ? esc(c.name) : duration(c.logon)}</small></div>
         </div>
         ${byStratum || '<div class="muted small" style="padding-top:6px">No airspace</div>'}
       </article>`;
@@ -200,10 +207,70 @@ export const PRESETS: [string, string][] = [
   ['Clear', ''],
 ];
 
-export function renderPreview(preview: boolean, selected: Set<string>) {
+// ─── Sector assignments (preview + plan editor) ───────────────────────────────────
+export interface AssignOpts {
+  stratum: Stratum;
+  /** Positions that can be picked (online in this mode). */
+  online: string[];
+  assign: Map<string, string>;
+  /** Current owner of each sector key (after assignments). */
+  ownership: Ownership;
+  colors: ColorBook;
+  /** Attribute that marks the <select>s: data-assign (preview) or data-plan-assign. */
+  attr: 'assign' | 'plan-assign' | 'live-assign';
+  busy?: boolean;
+}
+
+export function renderAssign(o: AssignOpts) {
+  const options = (key: string) => {
+    const cur = o.assign.get(key);
+    const ids = [...o.online];
+    if (cur && !ids.includes(cur)) ids.push(cur);
+    return `<option value="">Auto (SOP)</option>${ids
+      .sort()
+      .map((id) => `<option value="${id}" ${id === cur ? 'selected' : ''}>${id} ${esc(POSITIONS.get(id)?.name ?? '')}${o.online.includes(id) ? '' : ' (offline)'}</option>`)
+      .join('')}`;
+  };
+  const rows = SECTORS.filter((s) => s.stratum === o.stratum)
+    .map((s) => {
+      const key = sectorKey(s.stratum, s.id);
+      const owners = [...(o.ownership.sectorOwners.get(key) ?? [])];
+      const manual = o.assign.has(key);
+      return `<div class="row"><span class="row-num" style="${owners[0] ? `background:color-mix(in srgb, ${o.colors.get(owners[0])} 30%, transparent)` : ''}">${s.id}</span>
+        <div class="row-main"><div>${esc(s.name)}${manual ? '<span class="tag">manual</span>' : ''}</div><small>${owners.length ? owners.map((id) => esc(ownerShort(id))).join(', ') : 'Uncovered'}</small></div>
+        <select class="assign-select" data-${o.attr}="${key}" aria-label="Who works ${s.id} ${esc(s.name)}" ${o.online.length && !o.busy ? '' : 'disabled'}>${options(key)}</select></div>`;
+    })
+    .join('');
+  const n = [...o.assign.keys()].length;
+  return `<section class="group"><h3>Sector assignments · ${STRATUM_INFO[o.stratum].label}${n ? `<span class="count">${n} manual</span>` : ''}</h3>
+    <p class="muted small" style="margin:0 4px 8px">${{
+      'plan-assign': 'Hand a sector to any expected position. It only applies while that position is really online. Switch the stratum at the top of the map.',
+      'live-assign': 'Applies right now, on top of any running event. Only positions online on VATSIM can be picked. Switch the stratum at the top of the map; on a computer you can also click a sector on the map.',
+      assign: 'Hand a sector to any position you switched on. Switch the stratum at the top of the map; on a computer you can also click a sector on the map.',
+    }[o.attr]}</p>
+    <div class="inset">${rows}</div>
+    ${n ? `<div class="presets"><button class="btn" data-${o.attr}-reset ${o.busy ? 'disabled' : ''}>Reset all to SOP</button></div>` : ''}</section>`;
+}
+
+const ownerShort = (id: string) => `${id} ${POSITIONS.get(id)?.name ?? ''}`.trim();
+
+/** Floating menu shown when a sector is clicked on the map while editing. */
+export function renderAssignMenu(key: string, online: string[], assign: Map<string, string>, colors: ColorBook) {
+  const s = SECTOR_BY_KEY.get(key)!;
+  const cur = assign.get(key) ?? '';
+  const item = (id: string, label: string, color: string | null) =>
+    `<button class="menu-item${id === cur ? ' on' : ''}" data-menu-assign="${id}">${swatch(color)}<span>${label}</span></button>`;
+  return `<div class="menu-head"><span class="row-num">${s.id}</span><div><div class="tip-title">${esc(s.name)}</div><small class="muted">${STRATUM_INFO[s.stratum].label} · who works it?</small></div></div>
+    ${item('', 'Auto (SOP)', null)}
+    ${online.map((id) => item(id, `<b>${id}</b> ${esc(POSITIONS.get(id)?.name ?? '')}`, colors.get(id))).join('')}`;
+}
+
+export function renderPreview(preview: boolean, selected: Set<string>, assign: AssignOpts) {
   return `
     <label class="switch-row card-row"><span>Preview mode</span><input type="checkbox" class="switch" id="preview-toggle" ${preview ? 'checked' : ''}></label>
+    <p class="muted small" style="margin:8px 4px 0">Only on this device: nothing here is shared, and it is kept for your next visit. Link: <a href="#preview">#preview</a></p>
     <div class="presets">${PRESETS.map(([l, v]) => `<button class="btn" data-preset="${v}">${l}</button>`).join('')}</div>
+    ${selected.size ? renderAssign(assign) : ''}
     ${STRATA.map((s) => `<section class="group"><h3>${STRATUM_INFO[s].label} · ${STRATUM_INFO[s].altitude}</h3><div class="inset">${[...POSITIONS.values()]
       .filter((p) => p.stratum === s)
       .sort((a, b) => a.id.localeCompare(b.id))
@@ -212,29 +279,149 @@ export function renderPreview(preview: boolean, selected: Set<string>) {
     <div style="height:calc(24px + var(--safe-bottom))"></div>`;
 }
 
-// ─── Manual sheet (authorised users only) ────────────────────────────────────
-export const MANUAL_HOURS = [2, 4, 8, 24];
+// ─── Planned splits (admin only) ─────────────────────────────────────────────
+export function renderLogin(busy: boolean, error: string | null) {
+  return `<form id="plan-login" class="manual-login" autocomplete="off">
+      <input type="password" id="plan-token" placeholder="Access token" aria-label="Access token" autocomplete="off" spellcheck="false" />
+      <button class="btn tinted" type="submit" ${busy ? 'disabled' : ''}>Sign in</button>
+      ${error ? `<p class="form-error">${esc(error)}</p>` : ''}</form>`;
+}
 
-export function renderManual(opts: { signedIn: boolean; manual: Override[]; hours: number; busy: boolean; error: string | null }) {
+const tzSwitch = (tz: Tz) => `<div class="segmented small tz" style="--i:${tz === 'utc' ? 0 : 1}" role="tablist" aria-label="Time zone">
+    <span class="thumb"></span>
+    <button role="tab" data-tz="utc" aria-selected="${tz === 'utc'}">UTC</button>
+    <button role="tab" data-tz="local" aria-selected="${tz === 'local'}">Local · ${esc(localZoneName())}</button>
+  </div>`;
+
+const other = (tz: Tz): Tz => (tz === 'utc' ? 'local' : 'utc');
+
+export interface LiveInfo {
+  /** Positions online on VATSIM. */
+  online: string[];
+  event: Plan | null;
+  edits: number;
+  expires: number | null;
+}
+
+export function renderPlanList(opts: { plans: Plan[]; tz: Tz; busy: boolean; error: string | null; now: number; live: LiveInfo }) {
   const err = opts.error ? `<p class="form-error">${esc(opts.error)}</p>` : '';
-  if (!opts.signedIn)
-    return `<form id="manual-login" class="manual-login" autocomplete="off">
-      <input type="password" id="manual-token" placeholder="Access token" aria-label="Access token" autocomplete="off" spellcheck="false" />
-      <button class="btn tinted" type="submit" ${opts.busy ? 'disabled' : ''}>Sign in</button>
-      ${err}</form>`;
-  const on = new Map(opts.manual.map((o) => [o.position, o]));
+  const l = opts.live;
+  const liveCard = `<article class="plan live-card">
+      <div class="plan-time"><div>Live now</div><small class="muted">Online on VATSIM: ${l.online.length ? l.online.map((id) => `<b>${id}</b>`).join(' ') : 'nobody'}</small></div>
+      <small class="muted">${l.event ? `Event running: <b>${esc(l.event.name)}</b>` : 'No event running'} · ${l.edits ? `${l.edits} live edit${l.edits > 1 ? 's' : ''}, until ${esc(fmtTime(l.expires!, opts.tz, false))}` : 'no live edits'}</small>
+      <div class="plan-foot"><small class="muted">Live edits win over the event.</small><button class="btn tinted" data-live-open ${opts.busy ? 'disabled' : ''}>Edit live</button></div>
+    </article>`;
+  const cards = [...opts.plans]
+    .sort((a, b) => a.start - b.start)
+    .map((p) => {
+      const active = p.start <= opts.now && opts.now < p.end;
+      const chips = p.positions.map((id) => {
+        const n = p.assign.filter(([, v]) => v === id).length;
+        return `<span class="chip"><b>${id}</b>${esc(POSITIONS.get(id)?.name ?? '')}<span class="muted">· ${n ? `${n} sector${n > 1 ? 's' : ''}` : 'Auto'}</span></span>`;
+      }).join('');
+      const notes = Object.entries(p.notes ?? {}).filter(([, v]) => v);
+      return `<article class="plan${active ? ' active' : ''}">
+        <div class="plan-name">${esc(p.name)}${active ? '<span class="tag on">Now</span>' : ''}</div>
+        <div class="plan-time"><div>${esc(fmtRange(p.start, p.end, opts.tz))}</div>
+          <small class="muted">${esc(fmtRange(p.start, p.end, other(opts.tz)))}</small></div>
+        <div class="chips">${chips || '<span class="muted small">No positions</span>'}</div>
+        ${notes.length ? `<ul class="plan-notes">${notes.map(([id, v]) => `<li><b>${id}</b> ${esc(v)}</li>`).join('')}</ul>` : ''}
+        <div class="plan-foot"><small class="muted">${p.assign.length ? 'Sectors picked by hand' : 'All Auto (SOP)'}</small>
+          <span class="plan-btns"><button class="btn" data-plan-preview="${p.id}">Preview</button><button class="btn" data-plan-edit="${p.id}" ${opts.busy ? 'disabled' : ''}>Edit</button><button class="btn danger" data-plan-delete="${p.id}" ${opts.busy ? 'disabled' : ''}>Delete</button></span></div>
+      </article>`;
+    })
+    .join('');
   return `${err}
-    <p class="muted small" style="margin:4px 4px 0">For positions that are staffed but not on the VATSIM feed (event stand-by splits). They show for everyone until they expire; a real login for the same position takes over.</p>
-    <label class="switch-row card-row" style="margin-top:12px"><span>Expires after</span>
-      <select id="manual-hours">${MANUAL_HOURS.map((h) => `<option value="${h}" ${h === opts.hours ? 'selected' : ''}>${h} hours</option>`).join('')}</select></label>
-    <div class="presets"><button class="btn" data-manual-clear ${on.size && !opts.busy ? '' : 'disabled'}>Clear all</button><button class="btn" data-manual-signout>Sign out</button></div>
-    ${STRATA.map((s) => `<section class="group"><h3>${STRATUM_INFO[s].label} · ${STRATUM_INFO[s].altitude}</h3><div class="inset">${[...POSITIONS.values()]
-      .filter((p) => p.stratum === s)
-      .sort((a, b) => a.id.localeCompare(b.id))
-      .map((p) => {
-        const o = on.get(p.id);
-        return `<label class="row switch-row"><span class="row-num">${p.id}</span><div class="row-main"><div>${esc(p.name)}</div><small>${p.callsign} · ${p.freq}${o ? ` · ${remaining(new Date(o.expires))}` : ''}</small></div><input type="checkbox" class="switch" data-manual-pos="${p.id}" ${o ? 'checked' : ''} ${opts.busy ? 'disabled' : ''}></label>`;
+    ${tzSwitch(opts.tz)}
+    <div class="list">${liveCard}</div>
+    <section class="group"><h3>Events<span class="count">${opts.plans.length}</span></h3>
+      <p class="muted small" style="margin:0 4px 8px">Say ahead of time which positions are expected and who covers which sector. VATSIM decides who is online: an event only applies to its positions that are really logged on.</p>
+      <div class="presets" style="margin-top:0"><button class="btn tinted" data-plan-new ${opts.busy ? 'disabled' : ''}>New event</button><button class="btn" data-plan-signout>Sign out</button></div>
+      <div class="list">${cards || '<div class="empty-state"><p>No events planned.</p></div>'}</div></section>
+    <div style="height:calc(24px + var(--safe-bottom))"></div>`;
+}
+
+export function renderLiveEditor(opts: { hours: number; hoursOptions: number[]; expires: number | null; tz: Tz; busy: boolean; error: string | null; assign: AssignOpts }) {
+  const err = opts.error ? `<p class="form-error">${esc(opts.error)}</p>` : '';
+  const none = !opts.assign.online.length;
+  return `${err}
+    <p class="muted small" style="margin:4px 4px 0">Who covers which sector right now. Saved immediately and shown to everyone; wins over a running event. Who is online always comes from VATSIM.</p>
+    <label class="switch-row card-row" style="margin-top:12px"><span>Keep live edits for</span>
+      <select id="live-hours">${opts.hoursOptions.map((h) => `<option value="${h}" ${h === opts.hours ? 'selected' : ''}>${h} hour${h > 1 ? 's' : ''}</option>`).join('')}</select></label>
+    ${opts.expires ? `<p class="muted small" style="margin:6px 4px 0">Current live edits end at ${esc(fmtTime(opts.expires, opts.tz))} (${esc(fmtTime(opts.expires, other(opts.tz)))}).</p>` : ''}
+    <div class="presets"><button class="btn" data-live-done>‹ Back to events</button><button class="btn danger" data-live-clear ${opts.assign.assign.size && !opts.busy ? '' : 'disabled'}>Clear live edits</button></div>
+    ${none ? '<div class="empty-state"><p>No Memphis Center positions are online on VATSIM.</p></div>' : renderAssign(opts.assign)}
+    <div style="height:calc(24px + var(--safe-bottom))"></div>`;
+}
+
+export interface Draft {
+  id: string; name: string; start: number; end: number;
+  positions: Set<string>;
+  /** Positions whose sectors are picked by hand (the others are Auto / SOP). */
+  explicit: Set<string>;
+  assign: Map<string, string>;
+  notes: Map<string, string>;
+  isNew: boolean;
+}
+
+/** One card per expected position: note, Auto vs picked sectors, and what it ends up working. */
+function coverCard(d: Draft, id: string, i: number, own: Ownership) {
+  const pos = POSITIONS.get(id);
+  const pick = d.explicit.has(id);
+  const sectorPicker = STRATA.map((st) => {
+    const chips = SECTORS.filter((x) => x.stratum === st)
+      .map((x) => {
+        const key = sectorKey(st, x.id);
+        const holder = d.assign.get(key);
+        const other = holder && holder !== id ? `<small>→ ${holder}</small>` : '';
+        return `<label class="pos-chip sec"><input type="checkbox" data-cover-pos="${id}" data-cover-sector="${key}" ${holder === id ? 'checked' : ''}><b>${x.id}</b> ${esc(x.name)}${other}</label>`;
       })
-      .join('')}</div></section>`).join('')}
+      .join('');
+    return `<div class="strat-row"><span class="strat-tag">${st}</span><div class="chips">${chips}</div></div>`;
+  }).join('');
+  const works = own.positionSectors.get(id) ?? [];
+  const result = STRATA.map((st) => {
+    const ks = works.filter((k) => k.startsWith(`${st}-`));
+    return ks.length ? `<div class="strat-row"><span class="strat-tag">${st}</span><div class="chips">${ks.map(sectorChip).join('')}</div></div>` : '';
+  }).join('');
+  return `<article class="ctrl cover-card" style="--c:${PALETTE[i % PALETTE.length]}">
+      <div class="ctrl-head"><span class="ctrl-badge">${id}</span>
+        <div class="ctrl-id"><div class="cover-name">${esc(pos?.name ?? '')}</div><div class="ctrl-name">${esc(pos?.callsign ?? '')} · ${esc(pos?.freq ?? '')}</div></div></div>
+      <input class="note-input" data-plan-note="${id}" maxlength="120" placeholder="Note (optional, only you can see it)" value="${esc(d.notes.get(id) ?? '')}">
+      <div class="segmented small cover-mode" style="--n:2; --i:${pick ? 1 : 0}">
+        <span class="thumb"></span>
+        <button type="button" data-cover-mode="${id}" data-mode="auto" aria-selected="${!pick}">Auto (SOP)</button>
+        <button type="button" data-cover-mode="${id}" data-mode="pick" aria-selected="${pick}">Pick sectors</button>
+      </div>
+      ${pick ? `<div class="cover-pick">${sectorPicker}</div>` : ''}
+      <div class="cover-result"><small class="muted">${pick ? 'Covers exactly' : 'SOP gives it'}${works.length ? '' : ': nothing'}</small>${result}</div>
+    </article>`;
+}
+
+export function renderPlanEditor(opts: { draft: Draft; tz: Tz; busy: boolean; error: string | null; ownership: Ownership }) {
+  const d = opts.draft;
+  const err = opts.error ? `<p class="form-error">${esc(opts.error)}</p>` : '';
+  const field = (id: string, label: string, ms: number) => `<label class="time-row card-row"><span>${label}</span>
+      <input type="datetime-local" id="${id}" value="${Number.isFinite(ms) ? toInput(ms, opts.tz) : ''}">
+      <small class="muted" id="${id}-other">${Number.isFinite(ms) ? esc(fmtTime(ms, other(opts.tz))) : ''}</small></label>`;
+  const posGroups = STRATA.map((s) => `<section class="group"><h3>${STRATUM_INFO[s].label}</h3><div class="pos-grid">${[...POSITIONS.values()]
+    .filter((p) => p.stratum === s)
+    .sort((a, b) => a.id.localeCompare(b.id))
+    .map((p) => `<label class="pos-chip"><input type="checkbox" data-plan-pos="${p.id}" ${d.positions.has(p.id) ? 'checked' : ''}><b>${p.id}</b> ${esc(p.name)}</label>`)
+    .join('')}</div></section>`).join('');
+  const cards = [...d.positions].sort().map((id, i) => coverCard(d, id, i, opts.ownership)).join('');
+  const uncovered = SECTORS.filter((x) => !opts.ownership.sectorOwners.get(sectorKey(x.stratum, x.id))?.size).map((x) => `${x.stratum} ${x.id}`);
+  return `${err}
+    <label class="name-row card-row"><span>Name</span><input id="plan-name" maxlength="60" placeholder="e.g. Memphis FNO" value="${esc(d.name)}"></label>
+    ${tzSwitch(opts.tz)}
+    <div class="time-fields">${field('plan-start', 'Start', d.start)}${field('plan-end', 'End', d.end)}</div>
+    <section class="group"><h3>Expected positions</h3>
+      <div class="presets" style="margin-top:0">${PRESETS.filter(([, v]) => v).map(([l, v]) => `<button class="btn" data-plan-preset="${v}">${l}</button>`).join('')}</div></section>
+    ${posGroups}
+    ${cards ? `<section class="group"><h3>Who covers what</h3>
+      <p class="muted small" style="margin:0 4px 8px">For each position choose Auto (the SOP split among the Auto positions) or pick its sectors: it then covers exactly those. Only applies while the position is really online.</p>
+      <div class="list">${cards}</div>
+      ${uncovered.length && d.positions.size ? `<p class="form-error">Uncovered: ${esc(uncovered.join(', '))}</p>` : ''}</section>` : ''}
+    <div class="presets sticky-actions"><button class="btn tinted" data-plan-save ${opts.busy ? 'disabled' : ''}>Save event</button><button class="btn" data-plan-cancel>Cancel</button></div>
     <div style="height:calc(24px + var(--safe-bottom))"></div>`;
 }
