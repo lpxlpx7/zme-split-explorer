@@ -219,7 +219,23 @@ export interface AssignOpts {
   /** Attribute that marks the <select>s: data-assign (preview) or data-plan-assign. */
   attr: 'assign' | 'plan-assign' | 'live-assign';
   busy?: boolean;
+  /** Sector keys ticked for a bulk assignment. */
+  selected?: Set<string>;
 }
+
+// ─── Search + multi-select helpers ────────────────────────────────────────────
+/**
+ * Search box for the items with data-ft inside the nearest [data-filter-scope]. Filtering is done in place
+ * by main.ts (applyFilters), so typing never re-renders and keeps focus.
+ */
+export const filterBox = (scope: string, placeholder = 'Search number or name… (e.g. 22 63, LO, Memphis)') =>
+  `<div class="filter-box">${icons.search}<input type="search" class="filter-input" data-filter="${scope}" placeholder="${esc(placeholder)}" aria-label="Search" autocomplete="off" spellcheck="false"></div>`;
+/** Text an item is searched by. */
+const ft = (stratum: string, id: string, name: string, extra = '') => `data-ft="${esc(`${stratum} ${id} ${name} ${extra}`.toLowerCase())}"`;
+/** "Tick all shown / untick all shown" for a group of range-selectable checkboxes. */
+const bulkBtns = (group: string, on: string, off: string, busy?: boolean) =>
+  `<button type="button" class="btn" data-bulk-on="${group}" ${busy ? 'disabled' : ''}>${on}</button><button type="button" class="btn" data-bulk-off="${group}" ${busy ? 'disabled' : ''}>${off}</button>`;
+const RANGE_HINT = '<small class="muted range-hint">Shift-click ticks a range, like selecting files.</small>';
 
 export function renderAssign(o: AssignOpts) {
   const options = (key: string) => {
@@ -231,24 +247,38 @@ export function renderAssign(o: AssignOpts) {
       .map((id) => `<option value="${id}" ${id === cur ? 'selected' : ''}>${id} ${esc(POSITIONS.get(id)?.name ?? '')}${o.online.includes(id) ? '' : ' (offline)'}</option>`)
       .join('')}`;
   };
+  const enabled = o.online.length && !o.busy;
+  const sel = [...(o.selected ?? [])].filter((k) => k.startsWith(`${o.stratum}-`));
   const rows = SECTORS.filter((s) => s.stratum === o.stratum)
     .map((s) => {
       const key = sectorKey(s.stratum, s.id);
       const owners = [...(o.ownership.sectorOwners.get(key) ?? [])];
       const manual = o.assign.has(key);
-      return `<div class="row"><span class="row-num" style="${owners[0] ? `background:color-mix(in srgb, ${o.colors.get(owners[0])} 30%, transparent)` : ''}">${s.id}</span>
+      return `<div class="row${sel.includes(key) ? ' picked' : ''}" ${ft(s.stratum, s.id, s.name, s.freqs.join(' '))}>
+        <label class="row-sel" title="Select (Shift-click for a range)"><input type="checkbox" data-sel="${key}" data-range="sel" ${sel.includes(key) ? 'checked' : ''} ${enabled ? '' : 'disabled'} aria-label="Select ${s.id} ${esc(s.name)}"></label>
+        <span class="row-num" style="${owners[0] ? `background:color-mix(in srgb, ${o.colors.get(owners[0])} 30%, transparent)` : ''}">${s.id}</span>
         <div class="row-main"><div>${esc(s.name)}${manual ? '<span class="tag">manual</span>' : ''}</div><small>${owners.length ? owners.map((id) => esc(ownerShort(id))).join(', ') : 'Uncovered'}</small></div>
-        <select class="assign-select" data-${o.attr}="${key}" aria-label="Who works ${s.id} ${esc(s.name)}" ${o.online.length && !o.busy ? '' : 'disabled'}>${options(key)}</select></div>`;
+        <select class="assign-select" data-${o.attr}="${key}" aria-label="Who works ${s.id} ${esc(s.name)}" ${enabled ? '' : 'disabled'}>${options(key)}</select></div>`;
     })
     .join('');
+  const bulkOptions = `<option value="-" selected disabled>Assign ${sel.length} to…</option><option value="">Auto (SOP)</option>${[...o.online]
+    .sort()
+    .map((id) => `<option value="${id}">${id} ${esc(POSITIONS.get(id)?.name ?? '')}</option>`)
+    .join('')}`;
+  const bulk = sel.length
+    ? `<div class="bulk-bar"><span><b>${sel.length}</b> selected</span><select class="assign-select" data-bulk-assign aria-label="Assign the selected sectors" ${enabled ? '' : 'disabled'}>${bulkOptions}</select><button type="button" class="btn" data-sel-clear>Clear</button></div>`
+    : '';
   const n = [...o.assign.keys()].length;
-  return `<section class="group"><h3>Sector assignments · ${STRATUM_INFO[o.stratum].label}${n ? `<span class="count">${n} manual</span>` : ''}</h3>
+  return `<section class="group" data-filter-scope="assign"><h3>Sector assignments · ${STRATUM_INFO[o.stratum].label}${n ? `<span class="count">${n} manual</span>` : ''}</h3>
     <p class="muted small" style="margin:0 4px 8px">${{
       'plan-assign': 'Hand a sector to any expected position. It only applies while that position is really online. Switch the stratum at the top of the map.',
       'live-assign': 'Applies right now, on top of any running event. Only positions online on VATSIM can be picked. Switch the stratum at the top of the map; on a computer you can also click a sector on the map.',
       assign: 'Hand a sector to any position you switched on. Switch the stratum at the top of the map; on a computer you can also click a sector on the map.',
-    }[o.attr]}</p>
-    <div class="inset">${rows}</div>
+    }[o.attr]} Tick several sectors to hand them over at once.</p>
+    ${filterBox('assign')}
+    <div class="presets filter-actions">${bulkBtns('sel', 'Select shown', 'Deselect shown', !enabled)}${RANGE_HINT}</div>
+    ${bulk}
+    <div class="inset">${rows}<div class="empty-state filter-empty" hidden><p>No matching sectors.</p></div></div>
     ${n ? `<div class="presets"><button class="btn" data-${o.attr}-reset ${o.busy ? 'disabled' : ''}>Reset all to SOP</button></div>` : ''}</section>`;
 }
 
@@ -271,11 +301,16 @@ export function renderPreview(preview: boolean, selected: Set<string>, assign: A
     <p class="muted small" style="margin:8px 4px 0">Only on this device: nothing here is shared, and it is kept for your next visit. Link: <a href="#preview">#preview</a></p>
     <div class="presets">${PRESETS.map(([l, v]) => `<button class="btn" data-preset="${v}">${l}</button>`).join('')}</div>
     ${selected.size ? renderAssign(assign) : ''}
-    ${STRATA.map((s) => `<section class="group"><h3>${STRATUM_INFO[s].label} · ${STRATUM_INFO[s].altitude}</h3><div class="inset">${[...POSITIONS.values()]
+    <div data-filter-scope="positions">
+    <section class="group"><h3>Positions${selected.size ? `<span class="count">${selected.size} on</span>` : ''}</h3>
+      ${filterBox('positions')}
+      <div class="presets filter-actions">${bulkBtns('pos', 'Switch on shown', 'Switch off shown')}${RANGE_HINT}</div></section>
+    ${STRATA.map((s) => `<section class="group" data-fgroup><h3>${STRATUM_INFO[s].label} · ${STRATUM_INFO[s].altitude}</h3><div class="inset">${[...POSITIONS.values()]
       .filter((p) => p.stratum === s)
       .sort((a, b) => a.id.localeCompare(b.id))
-      .map((p) => `<label class="row switch-row"><span class="row-num">${p.id}</span><div class="row-main"><div>${esc(p.name)}</div><small>${p.callsign} · ${p.freq}</small></div><input type="checkbox" class="switch" data-pos="${p.id}" ${selected.has(p.id) ? 'checked' : ''}></label>`)
+      .map((p) => `<label class="row switch-row" ${ft(p.stratum, p.id, p.name, `${p.callsign} ${p.freq}`)}><span class="row-num">${p.id}</span><div class="row-main"><div>${esc(p.name)}</div><small>${p.callsign} · ${p.freq}</small></div><input type="checkbox" class="switch" data-pos="${p.id}" data-range="pos" ${selected.has(p.id) ? 'checked' : ''}></label>`)
       .join('')}</div></section>`).join('')}
+    <div class="empty-state filter-empty" hidden><p>No matching positions.</p></div></div>
     <div style="height:calc(24px + var(--safe-bottom))"></div>`;
 }
 
@@ -374,11 +409,15 @@ function coverCard(d: Draft, id: string, i: number, own: Ownership) {
         const key = sectorKey(st, x.id);
         const holder = d.assign.get(key);
         const other = holder && holder !== id ? `<small>→ ${holder}</small>` : '';
-        return `<label class="pos-chip sec"><input type="checkbox" data-cover-pos="${id}" data-cover-sector="${key}" ${holder === id ? 'checked' : ''}><b>${x.id}</b> ${esc(x.name)}${other}</label>`;
+        return `<label class="pos-chip sec" ${ft(st, x.id, x.name, x.freqs.join(' '))}><input type="checkbox" data-cover-pos="${id}" data-cover-sector="${key}" data-range="cover-${id}" ${holder === id ? 'checked' : ''}><b>${x.id}</b> ${esc(x.name)}${other}</label>`;
       })
       .join('');
-    return `<div class="strat-row"><span class="strat-tag">${st}</span><div class="chips">${chips}</div></div>`;
+    return `<div class="strat-row" data-fgroup><span class="strat-tag">${st}</span><div class="chips">${chips}</div></div>`;
   }).join('');
+  const picker = `<div class="cover-pick" data-filter-scope="cover-${id}">
+      ${filterBox(`cover-${id}`)}
+      <div class="presets filter-actions">${bulkBtns(`cover-${id}`, 'Pick shown', 'Unpick shown')}${RANGE_HINT}</div>
+      ${sectorPicker}<p class="muted small filter-empty" hidden>No matching sectors.</p></div>`;
   const works = own.positionSectors.get(id) ?? [];
   const result = STRATA.map((st) => {
     const ks = works.filter((k) => k.startsWith(`${st}-`));
@@ -393,7 +432,7 @@ function coverCard(d: Draft, id: string, i: number, own: Ownership) {
         <button type="button" data-cover-mode="${id}" data-mode="auto" aria-selected="${!pick}">Auto (SOP)</button>
         <button type="button" data-cover-mode="${id}" data-mode="pick" aria-selected="${pick}">Pick sectors</button>
       </div>
-      ${pick ? `<div class="cover-pick">${sectorPicker}</div>` : ''}
+      ${pick ? picker : ''}
       <div class="cover-result"><small class="muted">${pick ? 'Covers exactly' : 'SOP gives it'}${works.length ? '' : ': nothing'}</small>${result}</div>
     </article>`;
 }
@@ -404,11 +443,14 @@ export function renderPlanEditor(opts: { draft: Draft; tz: Tz; busy: boolean; er
   const field = (id: string, label: string, ms: number) => `<label class="time-row card-row"><span>${label}</span>
       <input type="datetime-local" id="${id}" value="${Number.isFinite(ms) ? toInput(ms, opts.tz) : ''}">
       <small class="muted" id="${id}-other">${Number.isFinite(ms) ? esc(fmtTime(ms, other(opts.tz))) : ''}</small></label>`;
-  const posGroups = STRATA.map((s) => `<section class="group"><h3>${STRATUM_INFO[s].label}</h3><div class="pos-grid">${[...POSITIONS.values()]
+  const posGroups = `<div data-filter-scope="plan-pos">${filterBox('plan-pos')}
+    <div class="presets filter-actions">${bulkBtns('plan-pos', 'Pick shown', 'Unpick shown')}${RANGE_HINT}</div>
+    ${STRATA.map((s) => `<section class="group" data-fgroup><h3>${STRATUM_INFO[s].label}</h3><div class="pos-grid">${[...POSITIONS.values()]
     .filter((p) => p.stratum === s)
     .sort((a, b) => a.id.localeCompare(b.id))
-    .map((p) => `<label class="pos-chip"><input type="checkbox" data-plan-pos="${p.id}" ${d.positions.has(p.id) ? 'checked' : ''}><b>${p.id}</b> ${esc(p.name)}</label>`)
-    .join('')}</div></section>`).join('');
+    .map((p) => `<label class="pos-chip" ${ft(p.stratum, p.id, p.name, `${p.callsign} ${p.freq}`)}><input type="checkbox" data-plan-pos="${p.id}" data-range="plan-pos" ${d.positions.has(p.id) ? 'checked' : ''}><b>${p.id}</b> ${esc(p.name)}</label>`)
+    .join('')}</div></section>`).join('')}
+    <p class="muted small filter-empty" hidden>No matching positions.</p></div>`;
   const cards = [...d.positions].sort().map((id, i) => coverCard(d, id, i, opts.ownership)).join('');
   const uncovered = SECTORS.filter((x) => !opts.ownership.sectorOwners.get(sectorKey(x.stratum, x.id))?.size).map((x) => `${x.stratum} ${x.id}`);
   return `${err}

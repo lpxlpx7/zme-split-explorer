@@ -49,6 +49,25 @@ VITE_OVERRIDES_URL=/api npm run build         # bake the API path into the site
 ADMIN_TOKEN='<long random string>' PORT=8787 npm run serve
 ```
 
+### Storing events in MySQL
+
+By default events are kept in `data/plans.json`. To keep them in MySQL/MariaDB instead, create an empty
+database and add one of these to `.env`:
+
+```bash
+MYSQL_URL=mysql://zmesplit:password@127.0.0.1:3306/zmesplit
+# or
+MYSQL_HOST=127.0.0.1
+MYSQL_PORT=3306
+MYSQL_USER=zmesplit
+MYSQL_PASSWORD=password
+MYSQL_DATABASE=zmesplit
+```
+
+On start the server creates the tables `zme_plans` and `zme_live` itself. If they are empty and
+`data/plans.json` exists, that file is imported once. Finished events stay in `zme_plans` as history; the
+startup log line shows which storage is in use (`data: mysql …`).
+
 Put nginx/Caddy with HTTPS in front (proxy everything to 127.0.0.1:8787) - the token travels in a header,
 so never serve it over plain HTTP. Env: `HOST`, `PORT`, `DATA_FILE`, `STATIC_DIR`, `ALLOWED_ORIGIN`
 (only needed if the site is served from a different origin than the API).

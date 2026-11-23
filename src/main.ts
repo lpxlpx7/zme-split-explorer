@@ -112,6 +112,11 @@ const sectorLabel = new Map<string, [number, number]>();
 const sectorArea = new Map<string, number>();
 /** Sector the assignment menu is open for. */
 let menuKey: string | null = null;
+/** Search text per filter scope (kept across re-renders). */
+const filters: Record<string, string> = {};
+/** Sector keys ticked for a bulk assignment, and the last checkbox clicked per range group (Shift-click). */
+const selectedKeys = new Set<string>();
+const rangeAnchor: Record<string, string> = {};
 
 // ─── bootstrap ───────────────────────────────────────────────────────────────
 async function load<T>(name: string): Promise<T> {
@@ -179,6 +184,7 @@ async function init() {
 
 /** Icons, and the two bottom sheets on phones. */
 function setupChrome() {
+  $('#copy-year').textContent = String(new Date().getFullYear());
   $('#preview-btn').innerHTML = icons.sliders;
   $('#plans-btn').innerHTML = icons.calendar;
   $('#recenter-btn').innerHTML = icons.location;
@@ -406,7 +412,7 @@ function ownerLabels(ctrls: OnlineController[]): GeoJSON.FeatureCollection {
 }
 
 // ─── sector assignment editing ───────────────────────────────────────────────
-interface Editor { online: string[]; assign: Map<string, string>; set(key: string, pos: string | null): void }
+interface Editor { online: string[]; assign: Map<string, string>; set(keys: string[], pos: string | null): void }
 
 /** The assignment editor that is open right now, if any (preview sheet, or a plan draft). */
 function editor(): Editor | null {
@@ -419,12 +425,14 @@ function editor(): Editor | null {
 }
 
 function assignOpts(online: string[], assign: Map<string, string>, attr: AssignOpts['attr']): AssignOpts {
-  return { stratum: state.stratum, online, assign, ownership: state.ownership!, colors, attr, busy: state.busy };
+  return { stratum: state.stratum, online, assign, ownership: state.ownership!, colors, attr, busy: state.busy, selected: selectedKeys };
 }
 
-function setPreviewAssign(key: string, pos: string | null) {
-  if (pos) state.previewAssign.set(key, pos);
-  else state.previewAssign.delete(key);
+function setPreviewAssign(keys: string[], pos: string | null) {
+  for (const key of keys) {
+    if (pos) state.previewAssign.set(key, pos);
+    else state.previewAssign.delete(key);
+  }
   savePreview();
   recompute();
   rerenderSheet();
@@ -433,9 +441,9 @@ function setPreviewAssign(key: string, pos: string | null) {
 const liveOnline = () => [...new Set(state.live.map((c) => c.position))].sort();
 
 /** Live edits are saved at once; changing one restarts the expiry clock. */
-function setLiveAssign(key: string, pos: string | null) {
-  const rest = liveEdits().filter(([k]) => k !== key);
-  const assign: [string, string][] = pos ? [...rest, [key, pos]] : rest;
+function setLiveAssign(keys: string[], pos: string | null) {
+  const rest = liveEdits().filter(([k]) => !keys.includes(k));
+  const assign: [string, string][] = pos ? [...rest, ...keys.map((k): [string, string] => [k, pos])] : rest;
   void commitPlans(state.plans, assign.length ? { assign, expires: Date.now() + state.liveHours * 3_600_000 } : null).then(() => { recompute(); rerenderSheet(); });
 }
 
@@ -629,7 +637,7 @@ function bindUI() {
     if (pick && menuKey) {
       const key = menuKey;
       closeMenu();
-      editor()?.set(key, pick.dataset.menuAssign || null);
+      editor()?.set([key], pick.dataset.menuAssign || null);
     }
   });
   document.addEventListener('pointerdown', (e) => {
@@ -671,10 +679,11 @@ function bindUI() {
 
   renderPreviewSheet();
   bindPlans();
+  bindMultiSelect();
   const sheet = $('#preview-sheet');
   sheet.addEventListener('change', (e) => {
     const t = e.target as HTMLInputElement;
-    if (t.dataset.assign) return setPreviewAssign(t.dataset.assign, t.value || null);
+    if (t.dataset.assign) return setPreviewAssign([t.dataset.assign], t.value || null);
     if (!t.dataset.pos && t.id !== 'preview-toggle') return; // manual sheet controls are handled in bindManual
     if (t.dataset.pos) {
       if (t.checked) state.previewSet.add(t.dataset.pos);
@@ -711,8 +720,126 @@ function bindUI() {
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       if (menuKey) return closeMenu();
+      const f = e.target as HTMLInputElement;
+      if (f.dataset?.filter && f.value) return; // Esc in a search box clears it (handled by the box)
       togglePreview(false);
       if (state.selectedPilot) { state.selectedPilot = null; recompute(); }
+    }
+  });
+}
+
+// ─── search + multi-select in the sheet ──────────────────────────────────────
+/**
+ * Comma/space separated terms, any of which may match: a number matches sector/position numbers starting
+ * with it ("2" → 20–28, "22" → 22), LO/HI/UH a stratum, anything else a part of the name, callsign or frequency.
+ */
+function matches(text: string, q: string): boolean {
+  const terms = q.toLowerCase().split(/[\s,，;]+/).filter(Boolean);
+  if (!terms.length) return true;
+  const [stratum, id] = text.split(' ');
+  return terms.some((t) => (/^\d+$/.test(t) ? id.startsWith(t) : /^(lo|hi|uh)$/.test(t) ? stratum === t : text.includes(t)));
+}
+
+/** Show only what matches each scope's search box (in place, so focus and scroll stay). */
+function applyFilters() {
+  document.querySelectorAll<HTMLElement>('#preview-scroll [data-filter-scope]').forEach((scope) => {
+    const name = scope.dataset.filterScope!;
+    const q = filters[name] ?? '';
+    const own = <T extends Element>(sel: string) => [...scope.querySelectorAll<T & HTMLElement>(sel)].filter((el) => el.closest('[data-filter-scope]') === scope);
+    let shown = 0;
+    for (const el of own('[data-ft]')) {
+      el.hidden = !matches(el.dataset.ft!, q);
+      if (!el.hidden) shown++;
+    }
+    for (const g of own('[data-fgroup]')) g.hidden = !g.querySelector('[data-ft]:not([hidden])');
+    for (const el of own('.filter-empty')) el.hidden = shown > 0;
+    const input = own<HTMLInputElement>('input[data-filter]')[0] as HTMLInputElement | undefined;
+    if (input && input.value !== q) input.value = q;
+  });
+}
+
+const rangeKey = (cb: HTMLInputElement) => cb.dataset.sel ?? cb.dataset.pos ?? cb.dataset.coverSector ?? cb.dataset.planPos ?? '';
+const visibleBoxes = (group: string) =>
+  [...document.querySelectorAll<HTMLInputElement>(`#preview-scroll input[data-range="${group}"]`)].filter((cb) => !cb.closest('[hidden]') && !cb.disabled);
+
+/** Tick (on) or untick several checkboxes of one group at once. */
+function applyBulk(group: string, boxes: HTMLInputElement[], on: boolean) {
+  const keys = boxes.map(rangeKey).filter(Boolean);
+  if (!keys.length) return;
+  const d = state.draft;
+  if (group === 'sel') {
+    for (const k of keys) on ? selectedKeys.add(k) : selectedKeys.delete(k);
+  } else if (group === 'pos') {
+    for (const k of keys) on ? state.previewSet.add(k) : state.previewSet.delete(k);
+    prunePreviewAssign();
+    savePreview();
+    state.preview = true;
+    recompute();
+  } else if (group === 'plan-pos' && d) {
+    for (const k of keys) on ? d.positions.add(k) : d.positions.delete(k);
+    pruneDraft(d);
+  } else if (group.startsWith('cover-') && d) {
+    const pos = group.slice('cover-'.length);
+    // A sector has one owner: picking it here takes it from whoever had it.
+    for (const k of keys) {
+      if (on) d.assign.set(k, pos);
+      else if (d.assign.get(k) === pos) d.assign.delete(k);
+    }
+  } else return;
+  rerenderSheet();
+}
+
+function bindMultiSelect() {
+  const sheet = $('#preview-sheet');
+  sheet.addEventListener('input', (e) => {
+    const t = e.target as HTMLInputElement;
+    if (!t.dataset.filter) return;
+    filters[t.dataset.filter] = t.value;
+    applyFilters();
+  });
+  sheet.addEventListener('keydown', (e) => {
+    const t = e.target as HTMLInputElement;
+    if (e.key === 'Escape' && t.dataset.filter && t.value) {
+      e.stopPropagation(); // do not close the sheet
+      filters[t.dataset.filter] = t.value = '';
+      applyFilters();
+    }
+  });
+  // Shift-click ticks/unticks everything between the last clicked box and this one, like selecting files.
+  sheet.addEventListener('click', (e) => {
+    const target = e.target as HTMLElement;
+    const cb = (target.matches('input[data-range]') ? target : target.closest('label')?.querySelector('input[data-range]')) as HTMLInputElement | null;
+    if (cb && !cb.disabled) {
+      const group = cb.dataset.range!;
+      const anchor = rangeAnchor[group];
+      rangeAnchor[group] = rangeKey(cb);
+      if (e.shiftKey && anchor && anchor !== rangeKey(cb)) {
+        const boxes = visibleBoxes(group);
+        const a = boxes.findIndex((b) => rangeKey(b) === anchor);
+        const b = boxes.indexOf(cb);
+        if (a >= 0 && b >= 0) {
+          e.preventDefault(); // we set the boxes ourselves
+          applyBulk(group, boxes.slice(Math.min(a, b), Math.max(a, b) + 1), !cb.checked);
+        }
+      }
+      return;
+    }
+    const on = target.closest<HTMLElement>('[data-bulk-on]')?.dataset.bulkOn;
+    const off = target.closest<HTMLElement>('[data-bulk-off]')?.dataset.bulkOff;
+    if (on || off) applyBulk((on ?? off)!, visibleBoxes((on ?? off)!), !!on);
+    if (target.closest('[data-sel-clear]')) { selectedKeys.clear(); rerenderSheet(); }
+  }, true);
+  sheet.addEventListener('change', (e) => {
+    const t = e.target as HTMLInputElement;
+    if (t.dataset.sel) {
+      if (t.checked) selectedKeys.add(t.dataset.sel);
+      else selectedKeys.delete(t.dataset.sel);
+      rerenderSheet();
+    }
+    if (t.hasAttribute('data-bulk-assign') && t.value !== '-') {
+      const keys = [...selectedKeys].filter((k) => k.startsWith(`${state.stratum}-`));
+      selectedKeys.clear();
+      editor()?.set(keys, t.value || null);
     }
   });
 }
@@ -728,7 +855,12 @@ function selectPilot(p: VatsimPilot, fly = true) {
 }
 
 function renderPreviewSheet() {
-  if (state.sheet === 'plans') return renderPlansSheet();
+  if (state.sheet === 'plans') renderPlansSheet();
+  else renderPreviewOnly();
+  applyFilters();
+}
+
+function renderPreviewOnly() {
   $('#sheet-title').textContent = 'Preview';
   $('#sheet-sub').textContent = 'Switch positions on to see who would own each sector.';
   $('#preview-scroll').innerHTML = renderPreview(state.preview, state.previewSet, assignOpts([...state.previewSet].sort(), state.previewAssign, 'assign'));
@@ -788,7 +920,7 @@ async function commitPlans(next: Plan[], live: LiveEdit | null = state.liveEdit)
 async function signIn(value: string) {
   state.busy = true;
   state.adminError = null;
-  renderPlansSheet();
+  renderPreviewSheet();
   try {
     const r = await fetchPlans(value);
     if (!r.admin) throw new Error('Wrong token');
@@ -801,7 +933,7 @@ async function signIn(value: string) {
     state.adminError = e instanceof Error ? e.message : String(e);
   }
   state.busy = false;
-  renderPlansSheet();
+  renderPreviewSheet();
   recompute();
 }
 
@@ -889,7 +1021,7 @@ function bindPlans() {
       if (live.length) void commitPlans(state.plans, { assign: live, expires: Date.now() + state.liveHours * 3_600_000 }).then(() => rerenderSheet());
       return;
     }
-    if (t.dataset.liveAssign) return setLiveAssign(t.dataset.liveAssign, t.value || null);
+    if (t.dataset.liveAssign) return setLiveAssign([t.dataset.liveAssign], t.value || null);
     const d = state.draft;
     if (!d) return;
     if (t.id === 'plan-start' || t.id === 'plan-end') {

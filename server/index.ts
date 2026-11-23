@@ -9,17 +9,15 @@
  * makes for right now (they win over the event). Who is online always comes from VATSIM.
  * Env: ADMIN_TOKEN (required, >= 16 chars) · PORT=8787 · HOST=127.0.0.1 · DATA_FILE=data/plans.json
  *      STATIC_DIR=dist · ALLOWED_ORIGIN (only if the site is served from a different origin)
+ *      MYSQL_URL, or MYSQL_HOST/PORT/USER/PASSWORD/DATABASE: keep events in MySQL instead of DATA_FILE (see store.ts)
  * Finished plans are dropped automatically.
  */
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
+import { stat } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
-
-interface Plan { id: string; name: string; start: number; end: number; positions: string[]; assign: [string, string][]; notes: Record<string, string> }
-interface Live { assign: [string, string][]; expires: number }
-interface Store { plans: Plan[]; live: Live | null }
+import { extname, join, normalize, resolve, sep } from 'node:path';
+import { fileStorage, mysqlConfigured, mysqlStorage, type Live, type Plan } from './store';
 
 // Paths are relative to the project root (not the cwd), so any process manager can start this.
 const ROOT = resolve(import.meta.dirname, '..');
@@ -40,32 +38,15 @@ const MAX_AHEAD_MS = 90 * 86_400_000;
 const MAX_PLANS = 50;
 const MAX_LIVE_MS = 48 * 3_600_000;
 
+const storage = mysqlConfigured(process.env) ? await mysqlStorage(process.env, DATA_FILE) : fileStorage(DATA_FILE);
+const { load, save } = storage;
+
 const sha = (s: string) => createHash('sha256').update(s).digest();
 const tokenHash = sha(TOKEN);
 const isAdmin = (req: IncomingMessage) => {
   const given = /^Bearer (.+)$/.exec(req.headers.authorization ?? '')?.[1];
   return !!given && timingSafeEqual(sha(given), tokenHash);
 };
-
-async function load(): Promise<Store> {
-  try {
-    const raw = JSON.parse(await readFile(DATA_FILE, 'utf8')) as Partial<Store>;
-    const now = Date.now();
-    return {
-      plans: (raw.plans ?? []).filter((p) => p.end > now).map((p) => ({ ...p, name: p.name ?? 'Event', notes: p.notes ?? {} })),
-      live: raw.live && raw.live.expires > now ? raw.live : null,
-    };
-  } catch {
-    return { plans: [], live: null };
-  }
-}
-
-async function save(store: Store) {
-  await mkdir(dirname(DATA_FILE), { recursive: true });
-  const tmp = `${DATA_FILE}.tmp`;
-  await writeFile(tmp, JSON.stringify(store));
-  await rename(tmp, DATA_FILE); // atomic: a crash never leaves a half-written file
-}
 
 const POS = /^\d{2}$/;
 const SECTOR = /^(LO|HI|UH)-\d{2}$/;
@@ -197,4 +178,4 @@ createServer(async (req, res) => {
     console.error(e);
     if (!res.headersSent) send(res, 400, { error: 'bad request' });
   }
-}).listen(PORT, HOST, () => console.log(`ZME Split Explorer on http://${HOST}:${PORT}  (static: ${STATIC_DIR}, data: ${DATA_FILE})`));
+}).listen(PORT, HOST, () => console.log(`ZME Split Explorer on http://${HOST}:${PORT}  (static: ${STATIC_DIR}, data: ${storage.kind})`));
