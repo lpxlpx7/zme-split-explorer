@@ -3,9 +3,7 @@
 Live airspace-split display for the virtual Memphis ARTCC (VATSIM), modelled on the ZTL ASX —
 now with the adjacent ARTCCs' sectors and who is working them.
 
-Live site: https://lpxlpx7.github.io/zme-split-explorer/
 
-Pushes to `main` are built and deployed to GitHub Pages by `.github/workflows/deploy.yml`.
 
 ```bash
 npm install
@@ -33,6 +31,27 @@ The whole project is TypeScript: the app (`src/`) and the data build (`tools/`, 
   - The others only have an outline on VATGlasses: their centre controllers share the strip; with
     several online the map shows the first and marks it *approx.*
 - **Preview**: toggle positions or pick a preset to see a split without live data.
+
+## Self-hosting & manual positions (private editing)
+
+Everything runs on your own server. `server/index.ts` is a dependency-free Node server that serves the
+built site and the API (`/api/overrides`); manual positions are stored in `data/overrides.json`.
+
+```bash
+npm ci
+VITE_OVERRIDES_URL=/api npm run build         # bake the API path into the site
+ADMIN_TOKEN='<long random string>' PORT=8787 npm run serve
+```
+
+Put nginx/Caddy with HTTPS in front (proxy everything to 127.0.0.1:8787) - the token travels in a header,
+so never serve it over plain HTTP. Env: `HOST`, `PORT`, `DATA_FILE`, `STATIC_DIR`, `ALLOWED_ORIGIN`
+(only needed if the site is served from a different origin than the API).
+
+Manual positions are for event days when a split is staffed but not on the VATSIM feed. Everyone sees
+the result; only the token holder can edit. Open the site with `#admin` appended, enter the token once; a
+lock button then appears in the header. Toggle positions on and choose how long they last (they expire on
+their own, max 48 h); a real login for the same position takes over automatically. Without
+`VITE_OVERRIDES_URL` the feature is absent.
 
 ## Airspace data
 

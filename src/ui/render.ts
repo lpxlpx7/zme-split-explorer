@@ -3,6 +3,7 @@ import type { ColorBook } from '../colors';
 import type { NeighborController, NeighborFacility, NeighborOwner, NeighborPiece } from '../neighbors';
 import type { Ownership, Piece } from '../ownership';
 import { POSITIONS, SECTORS, SECTOR_BY_KEY, STRATA, STRATUM_INFO, sectorKey, type Sector, type Stratum } from '../sectors';
+import type { Override } from '../manual';
 import type { OnlineController, VatsimPilot } from '../vatsim';
 import { icons } from './icons';
 
@@ -34,6 +35,11 @@ export function ownerCallsign(vm: ViewModel, id: string) {
 const duration = (logon: Date) => {
   const mins = Math.max(0, Math.round((Date.now() - logon.getTime()) / 60000));
   return mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins}m`;
+};
+
+export const remaining = (until: Date) => {
+  const mins = Math.max(0, Math.round((until.getTime() - Date.now()) / 60000));
+  return `${mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins}m`} left`;
 };
 
 // ─── Status ──────────────────────────────────────────────────────────────────
@@ -79,8 +85,8 @@ export function renderControllers(vm: ViewModel) {
       return `<article class="ctrl" style="--c:${vm.colors.get(c.position)}">
         <div class="ctrl-head">
           <span class="ctrl-badge">${c.position}</span>
-          <div class="ctrl-id"><div class="ctrl-callsign">${esc(c.callsign)}</div><div class="ctrl-name">${esc(pos?.name ?? '')} · ${esc(c.preview ? 'Preview' : c.name)}${c.rating ? ` · ${esc(c.rating)}` : ''}</div></div>
-          <div class="ctrl-freq"><div>${esc(c.frequency)}</div><small>${c.preview ? 'Preview' : duration(c.logon)}</small></div>
+          <div class="ctrl-id"><div class="ctrl-callsign">${esc(c.callsign)}</div><div class="ctrl-name">${esc(pos?.name ?? '')} · ${esc(c.preview ? 'Preview' : c.manual ? 'Staffed manually' : c.name)}${c.rating ? ` · ${esc(c.rating)}` : ''}</div></div>
+          <div class="ctrl-freq"><div>${esc(c.frequency)}</div><small>${c.preview ? 'Preview' : c.manual ? `Manual${c.until ? ` · ${remaining(c.until)}` : ''}` : duration(c.logon)}</small></div>
         </div>
         ${byStratum || '<div class="muted small" style="padding-top:6px">No airspace</div>'}
       </article>`;
@@ -202,6 +208,33 @@ export function renderPreview(preview: boolean, selected: Set<string>) {
       .filter((p) => p.stratum === s)
       .sort((a, b) => a.id.localeCompare(b.id))
       .map((p) => `<label class="row switch-row"><span class="row-num">${p.id}</span><div class="row-main"><div>${esc(p.name)}</div><small>${p.callsign} · ${p.freq}</small></div><input type="checkbox" class="switch" data-pos="${p.id}" ${selected.has(p.id) ? 'checked' : ''}></label>`)
+      .join('')}</div></section>`).join('')}
+    <div style="height:calc(24px + var(--safe-bottom))"></div>`;
+}
+
+// ─── Manual sheet (authorised users only) ────────────────────────────────────
+export const MANUAL_HOURS = [2, 4, 8, 24];
+
+export function renderManual(opts: { signedIn: boolean; manual: Override[]; hours: number; busy: boolean; error: string | null }) {
+  const err = opts.error ? `<p class="form-error">${esc(opts.error)}</p>` : '';
+  if (!opts.signedIn)
+    return `<form id="manual-login" class="manual-login" autocomplete="off">
+      <input type="password" id="manual-token" placeholder="Access token" aria-label="Access token" autocomplete="off" spellcheck="false" />
+      <button class="btn tinted" type="submit" ${opts.busy ? 'disabled' : ''}>Sign in</button>
+      ${err}</form>`;
+  const on = new Map(opts.manual.map((o) => [o.position, o]));
+  return `${err}
+    <p class="muted small" style="margin:4px 4px 0">For positions that are staffed but not on the VATSIM feed (event stand-by splits). They show for everyone until they expire; a real login for the same position takes over.</p>
+    <label class="switch-row card-row" style="margin-top:12px"><span>Expires after</span>
+      <select id="manual-hours">${MANUAL_HOURS.map((h) => `<option value="${h}" ${h === opts.hours ? 'selected' : ''}>${h} hours</option>`).join('')}</select></label>
+    <div class="presets"><button class="btn" data-manual-clear ${on.size && !opts.busy ? '' : 'disabled'}>Clear all</button><button class="btn" data-manual-signout>Sign out</button></div>
+    ${STRATA.map((s) => `<section class="group"><h3>${STRATUM_INFO[s].label} · ${STRATUM_INFO[s].altitude}</h3><div class="inset">${[...POSITIONS.values()]
+      .filter((p) => p.stratum === s)
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .map((p) => {
+        const o = on.get(p.id);
+        return `<label class="row switch-row"><span class="row-num">${p.id}</span><div class="row-main"><div>${esc(p.name)}</div><small>${p.callsign} · ${p.freq}${o ? ` · ${remaining(new Date(o.expires))}` : ''}</small></div><input type="checkbox" class="switch" data-manual-pos="${p.id}" ${o ? 'checked' : ''} ${opts.busy ? 'disabled' : ''}></label>`;
+      })
       .join('')}</div></section>`).join('')}
     <div style="height:calc(24px + var(--safe-bottom))"></div>`;
 }

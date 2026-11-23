@@ -49,6 +49,9 @@ export interface OnlineController {
   rating: string;
   logon: Date;
   preview?: boolean;
+  /** Staffed by hand (not on the VATSIM feed) until `until`. */
+  manual?: boolean;
+  until?: Date;
 }
 
 const CALLSIGN = /^MEM_(?:([A-Z0-9]{1,3})_)?(?:([A-Z0-9]{1,3})_)?CTR$/;

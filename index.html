@@ -42,6 +42,7 @@
             <h1>ZME Split Explorer</h1>
             <p><span class="live" id="live">Connecting…</span></p>
           </div>
+          <button class="icon-btn tinted" data-action="open-manual" id="manual-btn" aria-label="Manual positions" title="Manual positions" hidden></button>
           <button class="icon-btn tinted" data-action="open-preview" id="preview-btn" aria-label="Preview splits" title="Preview splits"></button>
         </header>
         <form id="search" class="search" autocomplete="off" role="search">
@@ -81,8 +82,8 @@
         <div class="grabber" aria-hidden="true"></div>
         <div class="sheet-head">
           <div>
-            <h2>Preview</h2>
-            <p>Switch positions on to see who would own each sector.</p>
+            <h2 id="sheet-title">Preview</h2>
+            <p id="sheet-sub">Switch positions on to see who would own each sector.</p>
           </div>
           <button class="close" data-action="close-preview" aria-label="Close"></button>
         </div>

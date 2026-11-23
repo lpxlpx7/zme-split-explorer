@@ -354,3 +354,10 @@ small, .small { font-size: 12px; }
   }
   :root[data-preview='open'] .backdrop { opacity: 1; pointer-events: auto; }
 }
+
+/* Manual-staffing sheet */
+.manual-login { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 0; }
+.manual-login input { flex: 1; min-width: 0; font: inherit; padding: 10px 12px; border-radius: 10px; border: 0; background: var(--fill-2); color: var(--label); }
+.form-error { flex-basis: 100%; margin: 4px 4px 0; color: var(--red, #ff3b30); font-size: 13px; }
+#manual-hours { font: inherit; border: 0; background: var(--fill-2); color: var(--label); padding: 6px 8px; border-radius: 8px; }
+.btn:disabled { opacity: 0.4; pointer-events: none; }

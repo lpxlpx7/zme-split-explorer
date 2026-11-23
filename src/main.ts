@@ -13,6 +13,7 @@ import {
 } from './neighbors';
 import { computeOwnership, type Ownership, type Piece } from './ownership';
 import { POSITIONS, SECTORS, SECTOR_BY_KEY, STRATA, STRATUM_INFO, sectorKey, type Stratum } from './sectors';
+import { fetchOverrides, manualEnabled, saveOverrides, token, type Override } from './manual';
 import { icons } from './ui/icons';
 import {
   esc,
@@ -21,6 +22,7 @@ import {
   renderAircraftCard,
   renderControllers,
   renderNeighbors,
+  renderManual,
   renderPreview,
   renderSectors,
   renderStatus,
@@ -53,6 +55,12 @@ const state = {
   error: null as string | null,
   lastFetch: 0,
   selectedPilot: null as string | null,
+  manual: [] as Override[],
+  admin: false,
+  manualHours: 4,
+  manualBusy: false,
+  manualError: null as string | null,
+  sheet: 'preview' as 'preview' | 'manual',
 };
 if (!STRATA.includes(state.stratum)) state.stratum = 'HI';
 
@@ -128,6 +136,7 @@ async function init() {
 /** Icons, and the two bottom sheets on phones. */
 function setupChrome() {
   $('#preview-btn').innerHTML = icons.sliders;
+  $('#manual-btn').innerHTML = icons.lock;
   $('#recenter-btn').innerHTML = icons.location;
   $('#neighbors-btn').innerHTML = icons.layers;
   $('.search-icon').innerHTML = icons.search;
@@ -174,12 +183,34 @@ async function poll() {
   } catch (e) {
     state.error = e instanceof Error ? e.message : String(e);
   }
+  await refreshManual();
   recompute();
   setTimeout(poll, document.hidden ? POLL_MS * 4 : POLL_MS);
 }
 
+/** Manual positions are public to read; the token only proves who may edit. Failures keep the last list. */
+async function refreshManual() {
+  if (!manualEnabled || state.manualBusy) return;
+  try {
+    const r = await fetchOverrides();
+    state.manual = r.positions;
+    state.admin = r.admin;
+  } catch { /* backend unreachable — keep what we had */ }
+  $('#manual-btn').hidden = !state.admin;
+}
+
+function manualControllers(): OnlineController[] {
+  const live = new Set(state.live.map((c) => c.position));
+  return state.manual
+    .filter((o) => o.expires > Date.now() && !live.has(o.position) && POSITIONS.has(o.position))
+    .map((o) => {
+      const p = POSITIONS.get(o.position)!;
+      return { position: o.position, callsign: p.callsign, frequency: p.freq, name: 'Manual', cid: 0, rating: '', logon: new Date(), manual: true, until: new Date(o.expires) };
+    });
+}
+
 function controllers(): OnlineController[] {
-  if (!state.preview) return state.live;
+  if (!state.preview) return [...state.live, ...manualControllers()].sort((a, b) => a.position.localeCompare(b.position));
   return [...state.previewSet].sort().map((id) => {
     const p = POSITIONS.get(id)!;
     return { position: id, callsign: p.callsign, frequency: p.freq, name: 'Preview', cid: 0, rating: '', logon: new Date(), preview: true };
@@ -368,12 +399,13 @@ function bindUI() {
   });
   document.addEventListener('click', (e) => {
     const a = (e.target as HTMLElement).closest<HTMLElement>('[data-action]')?.dataset.action;
-    if (a === 'open-preview') togglePreview(true);
+    if (a === 'open-preview') openSheet('preview');
+    if (a === 'open-manual') openSheet('manual');
     if (a === 'close-preview') togglePreview(false);
     if (a === 'close-aircraft') { state.selectedPilot = null; recompute(); }
     if (a === 'recenter') view.map.fitBounds(zmeBounds, { padding: padding() });
     if (a === 'toggle-neighbors') setNeighborsVisible(!state.neighborsVisible);
-    if (a === 'exit-preview') { state.preview = false; togglePreview(false); renderPreviewSheet(); recompute(); }
+    if (a === 'exit-preview') { state.preview = false; togglePreview(false); state.sheet = 'preview'; renderPreviewSheet(); recompute(); }
   });
   $('#body').addEventListener('change', (e) => {
     const t = e.target as HTMLInputElement;
@@ -402,9 +434,11 @@ function bindUI() {
   view.map.on('mouseleave', 'aircraft', () => (view.map.getCanvas().style.cursor = ''));
 
   renderPreviewSheet();
+  bindManual();
   const sheet = $('#preview-sheet');
   sheet.addEventListener('change', (e) => {
     const t = e.target as HTMLInputElement;
+    if (t.dataset.manualPos || t.id === 'manual-hours') return;
     if (t.dataset.pos) {
       if (t.checked) state.previewSet.add(t.dataset.pos);
       else state.previewSet.delete(t.dataset.pos);
@@ -443,7 +477,90 @@ function selectPilot(p: VatsimPilot, fly = true) {
 }
 
 function renderPreviewSheet() {
+  if (state.sheet === 'manual') return renderManualSheet();
+  $('#sheet-title').textContent = 'Preview';
+  $('#sheet-sub').textContent = 'Switch positions on to see who would own each sector.';
   $('#preview-scroll').innerHTML = renderPreview(state.preview, state.previewSet);
+}
+
+function renderManualSheet() {
+  $('#sheet-title').textContent = 'Manual positions';
+  $('#sheet-sub').textContent = 'Visible to everyone · only you can edit';
+  $('#preview-scroll').innerHTML = renderManual({ signedIn: state.admin, manual: state.manual, hours: state.manualHours, busy: state.manualBusy, error: state.manualError });
+}
+
+function openSheet(mode: 'preview' | 'manual') {
+  state.sheet = mode;
+  state.manualError = null;
+  renderPreviewSheet();
+  togglePreview(true);
+}
+
+async function commitManual(next: Override[]) {
+  state.manualBusy = true;
+  state.manualError = null;
+  renderManualSheet();
+  try {
+    const r = await saveOverrides(token.get(), next);
+    state.manual = r.positions;
+  } catch (e) {
+    state.manualError = e instanceof Error ? e.message : String(e);
+  }
+  state.manualBusy = false;
+  renderManualSheet();
+  recompute();
+}
+
+async function signIn(value: string) {
+  state.manualBusy = true;
+  state.manualError = null;
+  renderManualSheet();
+  try {
+    const r = await fetchOverrides(value);
+    if (!r.admin) throw new Error('Wrong token');
+    token.set(value);
+    state.admin = true;
+    state.manual = r.positions;
+    $('#manual-btn').hidden = false;
+  } catch (e) {
+    state.manualError = e instanceof Error ? e.message : String(e);
+  }
+  state.manualBusy = false;
+  renderManualSheet();
+  recompute();
+}
+
+function bindManual() {
+  const sheet = $('#preview-sheet');
+  sheet.addEventListener('submit', (e) => {
+    if ((e.target as HTMLElement).id !== 'manual-login') return;
+    e.preventDefault();
+    const v = $<HTMLInputElement>('#manual-token').value.trim();
+    if (v) void signIn(v);
+  });
+  sheet.addEventListener('change', (e) => {
+    const t = e.target as HTMLInputElement;
+    if (t.id === 'manual-hours') state.manualHours = Number(t.value);
+    const pos = t.dataset.manualPos;
+    if (!pos) return;
+    const rest = state.manual.filter((o) => o.position !== pos);
+    void commitManual(t.checked ? [...rest, { position: pos, expires: Date.now() + state.manualHours * 3_600_000 }] : rest);
+  });
+  sheet.addEventListener('click', (e) => {
+    const t = e.target as HTMLElement;
+    if (t.closest('[data-manual-clear]')) void commitManual([]);
+    if (t.closest('[data-manual-signout]')) {
+      token.set('');
+      state.admin = false;
+      $('#manual-btn').hidden = true;
+      renderManualSheet();
+    }
+  });
+  // Hidden entry point: open the site with #admin to get the sign-in form.
+  if (manualEnabled && location.hash === '#admin') {
+    history.replaceState(null, '', location.pathname + location.search);
+    openSheet('manual');
+  }
 }
 
 function togglePreview(open: boolean) {
