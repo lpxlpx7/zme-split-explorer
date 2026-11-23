@@ -6,6 +6,7 @@ import { POSITIONS, SECTORS, SECTOR_BY_KEY, STRATA, STRATUM_INFO, sectorKey, typ
 import { fmtRange, fmtTime, localZoneName, toInput, type Plan, type Tz } from '../plans';
 import type { OnlineController, VatsimPilot } from '../vatsim';
 import { icons } from './icons';
+import { PALETTE } from '../colors';
 
 export interface ViewModel {
   stratum: Stratum;
@@ -314,7 +315,10 @@ export function renderPlanList(opts: { plans: Plan[]; tz: Tz; busy: boolean; err
     .sort((a, b) => a.start - b.start)
     .map((p) => {
       const active = p.start <= opts.now && opts.now < p.end;
-      const chips = p.positions.map((id) => `<span class="chip"><b>${id}</b>${esc(POSITIONS.get(id)?.name ?? '')}</span>`).join('');
+      const chips = p.positions.map((id) => {
+        const n = p.assign.filter(([, v]) => v === id).length;
+        return `<span class="chip"><b>${id}</b>${esc(POSITIONS.get(id)?.name ?? '')}<span class="muted">· ${n ? `${n} sector${n > 1 ? 's' : ''}` : 'Auto'}</span></span>`;
+      }).join('');
       const notes = Object.entries(p.notes ?? {}).filter(([, v]) => v);
       return `<article class="plan${active ? ' active' : ''}">
         <div class="plan-name">${esc(p.name)}${active ? '<span class="tag on">Now</span>' : ''}</div>
@@ -322,7 +326,7 @@ export function renderPlanList(opts: { plans: Plan[]; tz: Tz; busy: boolean; err
           <small class="muted">${esc(fmtRange(p.start, p.end, other(opts.tz)))}</small></div>
         <div class="chips">${chips || '<span class="muted small">No positions</span>'}</div>
         ${notes.length ? `<ul class="plan-notes">${notes.map(([id, v]) => `<li><b>${id}</b> ${esc(v)}</li>`).join('')}</ul>` : ''}
-        <div class="plan-foot"><small class="muted">${p.assign.length ? `${p.assign.length} sector assignment${p.assign.length > 1 ? 's' : ''}` : 'SOP split'}</small>
+        <div class="plan-foot"><small class="muted">${p.assign.length ? 'Sectors picked by hand' : 'All Auto (SOP)'}</small>
           <span class="plan-btns"><button class="btn" data-plan-preview="${p.id}">Preview</button><button class="btn" data-plan-edit="${p.id}" ${opts.busy ? 'disabled' : ''}>Edit</button><button class="btn danger" data-plan-delete="${p.id}" ${opts.busy ? 'disabled' : ''}>Delete</button></span></div>
       </article>`;
     })
@@ -350,9 +354,51 @@ export function renderLiveEditor(opts: { hours: number; hoursOptions: number[]; 
     <div style="height:calc(24px + var(--safe-bottom))"></div>`;
 }
 
-export interface Draft { id: string; name: string; start: number; end: number; positions: Set<string>; assign: Map<string, string>; notes: Map<string, string>; isNew: boolean }
+export interface Draft {
+  id: string; name: string; start: number; end: number;
+  positions: Set<string>;
+  /** Positions whose sectors are picked by hand (the others are Auto / SOP). */
+  explicit: Set<string>;
+  assign: Map<string, string>;
+  notes: Map<string, string>;
+  isNew: boolean;
+}
 
-export function renderPlanEditor(opts: { draft: Draft; tz: Tz; busy: boolean; error: string | null; assign: AssignOpts }) {
+/** One card per expected position: note, Auto vs picked sectors, and what it ends up working. */
+function coverCard(d: Draft, id: string, i: number, own: Ownership) {
+  const pos = POSITIONS.get(id);
+  const pick = d.explicit.has(id);
+  const sectorPicker = STRATA.map((st) => {
+    const chips = SECTORS.filter((x) => x.stratum === st)
+      .map((x) => {
+        const key = sectorKey(st, x.id);
+        const holder = d.assign.get(key);
+        const other = holder && holder !== id ? `<small>→ ${holder}</small>` : '';
+        return `<label class="pos-chip sec"><input type="checkbox" data-cover-pos="${id}" data-cover-sector="${key}" ${holder === id ? 'checked' : ''}><b>${x.id}</b> ${esc(x.name)}${other}</label>`;
+      })
+      .join('');
+    return `<div class="strat-row"><span class="strat-tag">${st}</span><div class="chips">${chips}</div></div>`;
+  }).join('');
+  const works = own.positionSectors.get(id) ?? [];
+  const result = STRATA.map((st) => {
+    const ks = works.filter((k) => k.startsWith(`${st}-`));
+    return ks.length ? `<div class="strat-row"><span class="strat-tag">${st}</span><div class="chips">${ks.map(sectorChip).join('')}</div></div>` : '';
+  }).join('');
+  return `<article class="ctrl cover-card" style="--c:${PALETTE[i % PALETTE.length]}">
+      <div class="ctrl-head"><span class="ctrl-badge">${id}</span>
+        <div class="ctrl-id"><div class="cover-name">${esc(pos?.name ?? '')}</div><div class="ctrl-name">${esc(pos?.callsign ?? '')} · ${esc(pos?.freq ?? '')}</div></div></div>
+      <input class="note-input" data-plan-note="${id}" maxlength="120" placeholder="Note (optional, only you can see it)" value="${esc(d.notes.get(id) ?? '')}">
+      <div class="segmented small cover-mode" style="--n:2; --i:${pick ? 1 : 0}">
+        <span class="thumb"></span>
+        <button type="button" data-cover-mode="${id}" data-mode="auto" aria-selected="${!pick}">Auto (SOP)</button>
+        <button type="button" data-cover-mode="${id}" data-mode="pick" aria-selected="${pick}">Pick sectors</button>
+      </div>
+      ${pick ? `<div class="cover-pick">${sectorPicker}</div>` : ''}
+      <div class="cover-result"><small class="muted">${pick ? 'Covers exactly' : 'SOP gives it'}${works.length ? '' : ': nothing'}</small>${result}</div>
+    </article>`;
+}
+
+export function renderPlanEditor(opts: { draft: Draft; tz: Tz; busy: boolean; error: string | null; ownership: Ownership }) {
   const d = opts.draft;
   const err = opts.error ? `<p class="form-error">${esc(opts.error)}</p>` : '';
   const field = (id: string, label: string, ms: number) => `<label class="time-row card-row"><span>${label}</span>
@@ -363,8 +409,8 @@ export function renderPlanEditor(opts: { draft: Draft; tz: Tz; busy: boolean; er
     .sort((a, b) => a.id.localeCompare(b.id))
     .map((p) => `<label class="pos-chip"><input type="checkbox" data-plan-pos="${p.id}" ${d.positions.has(p.id) ? 'checked' : ''}><b>${p.id}</b> ${esc(p.name)}</label>`)
     .join('')}</div></section>`).join('');
-  const notes = [...d.positions].sort().map((id) => `<div class="row"><span class="row-num">${id}</span><div class="row-main note-name">${esc(POSITIONS.get(id)?.name ?? '')}</div>
-      <input class="note-input" data-plan-note="${id}" maxlength="120" placeholder="Optional note" value="${esc(d.notes.get(id) ?? '')}"></div>`).join('');
+  const cards = [...d.positions].sort().map((id, i) => coverCard(d, id, i, opts.ownership)).join('');
+  const uncovered = SECTORS.filter((x) => !opts.ownership.sectorOwners.get(sectorKey(x.stratum, x.id))?.size).map((x) => `${x.stratum} ${x.id}`);
   return `${err}
     <label class="name-row card-row"><span>Name</span><input id="plan-name" maxlength="60" placeholder="e.g. Memphis FNO" value="${esc(d.name)}"></label>
     ${tzSwitch(opts.tz)}
@@ -372,8 +418,10 @@ export function renderPlanEditor(opts: { draft: Draft; tz: Tz; busy: boolean; er
     <section class="group"><h3>Expected positions</h3>
       <div class="presets" style="margin-top:0">${PRESETS.filter(([, v]) => v).map(([l, v]) => `<button class="btn" data-plan-preset="${v}">${l}</button>`).join('')}</div></section>
     ${posGroups}
-    ${notes ? `<section class="group"><h3>Notes · only you can see them</h3><div class="inset">${notes}</div></section>` : ''}
-    ${d.positions.size ? renderAssign(opts.assign) : ''}
+    ${cards ? `<section class="group"><h3>Who covers what</h3>
+      <p class="muted small" style="margin:0 4px 8px">For each position choose Auto (the SOP split among the Auto positions) or pick its sectors: it then covers exactly those. Only applies while the position is really online.</p>
+      <div class="list">${cards}</div>
+      ${uncovered.length && d.positions.size ? `<p class="form-error">Uncovered: ${esc(uncovered.join(', '))}</p>` : ''}</section>` : ''}
     <div class="presets sticky-actions"><button class="btn tinted" data-plan-save ${opts.busy ? 'disabled' : ''}>Save event</button><button class="btn" data-plan-cancel>Cancel</button></div>
     <div style="height:calc(24px + var(--safe-bottom))"></div>`;
 }

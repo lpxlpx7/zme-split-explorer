@@ -54,6 +54,9 @@ export const fetchPlans = (t = token.get()) => call({ token: t });
 export const savePlans = (t: string, plans: Plan[], live: LiveEdit | null) =>
   call({ method: 'PUT', token: t, body: JSON.stringify({ plans, live }) });
 
+/** Positions with sectors picked by hand in an event: they cover exactly those (the rest are Auto / SOP). */
+export const exclusiveOf = (assign: Iterable<[string, string]>) => new Set([...assign].map(([, pos]) => pos));
+
 /** The plan in force at `now` (the most recently started one if several overlap). */
 export function activePlan(plans: Plan[], now = Date.now()): Plan | null {
   return plans.filter((p) => p.start <= now && now < p.end).sort((a, b) => b.start - a.start)[0] ?? null;

@@ -55,22 +55,26 @@ export interface OnlineController {
 const CALLSIGN = /^MEM_(?:([A-Z0-9]{1,3})_)?(?:([A-Z0-9]{1,3})_)?CTR$/;
 
 /**
- * Map a controller to a ZME position: frequency first (relief callsigns like
- * MEM_1_CTR still match), then the sector number in the callsign, then bare
- * MEM_CTR → the primary combined position (Razorback 22).
+ * Map a controller to a ZME position:
+ * 1. a two- or three-digit sector number in the callsign: MEM_22_CTR → 22, MEM_221_CTR → 22 (first two digits);
+ * 2. otherwise the frequency (relief callsigns like MEM_1_CTR);
+ * 3. otherwise a one-digit number (MEM_5_CTR → 05), and bare MEM_CTR → the primary combined position (22).
  */
 export function resolvePosition(c: Pick<VatsimController, 'callsign' | 'frequency'>): string | null {
   const callsign = c.callsign.toUpperCase();
   const m = CALLSIGN.exec(callsign);
   if (!m) return null;
-  const freq = Number.parseFloat(c.frequency).toFixed(3);
-  const byFreq = FREQ_TO_POSITION.get(freq);
+  const parts = [m[2], m[1]].filter((x): x is string => !!x && /^\d+$/.test(x));
+  for (const part of parts) {
+    if (part.length < 2 || part.length > 3) continue;
+    const id = part.slice(0, 2);
+    if (POSITIONS.has(id)) return id;
+  }
+  const byFreq = FREQ_TO_POSITION.get(Number.parseFloat(c.frequency).toFixed(3));
   if (byFreq) return byFreq;
-  for (const part of [m[2], m[1]]) {
-    if (part && /^\d{1,2}$/.test(part)) {
-      const id = part.padStart(2, '0');
-      if (POSITIONS.has(id)) return id;
-    }
+  for (const part of parts) {
+    const id = part.padStart(2, '0');
+    if (part.length === 1 && POSITIONS.has(id)) return id;
   }
   return m[1] || m[2] ? null : '22';
 }

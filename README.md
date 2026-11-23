@@ -17,8 +17,9 @@ The whole project is TypeScript: the app (`src/`) and the data build (`tools/`, 
 ## How it works
 
 - **Live data**: polls `https://data.vatsim.net/v3/vatsim-data.json` every 15 s. `MEM_*_CTR`
-  controllers are matched to a sector by frequency first, then by the number in the callsign.
-  A bare `MEM_CTR` counts as Razorback (22).
+  controllers are matched by the number in the callsign first (two digits, or the first two of three:
+  `MEM_221_CTR` → 22), then by frequency (relief callsigns like `MEM_1_CTR`). A bare `MEM_CTR` counts as
+  Razorback (22).
 - **ZME split logic** (`src/ownership.ts`, rules from ZME Enroute SOP V1.3 §3-2):
   - If only combined positions (22/63/46/44) are online, the combined 2/3/4-way area split applies at all altitudes.
   - Otherwise each stratum is resolved separately. A sector goes to its own position if that is online,
@@ -56,8 +57,9 @@ Open the site with `#admin` appended and enter the token once; a calendar button
 Who is online **always** comes from VATSIM; the admin only decides who covers which sector.
 
 - **Events**: a name, a time window (entered in UTC or local time, the other zone shown next to it; up to
-  72 h, up to 90 days ahead), the expected positions, optional sector assignments and an optional note per
-  position. Notes are only ever sent to the admin. Each event has a **Preview** button that loads it into
+  72 h, up to 90 days ahead) and the expected positions. For each position choose **Auto** (the SOP split
+  among the Auto positions) or **pick its sectors** (it then covers exactly those, nothing else), and add an
+  optional note. Notes are only ever sent to the admin. Each event has a **Preview** button that loads it into
   your local Preview. Finished events are deleted automatically; overlapping events: the later start wins.
 - **Live edits**: sector assignments for right now, saved immediately and shown to everyone. They win over a
   running event, sector by sector, and expire after the time you choose (1-24 h).

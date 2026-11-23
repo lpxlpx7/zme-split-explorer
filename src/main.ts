@@ -13,7 +13,7 @@ import {
 } from './neighbors';
 import { computeOwnership, type Ownership, type Piece } from './ownership';
 import { POSITIONS, SECTORS, SECTOR_BY_KEY, STRATA, STRATUM_INFO, sectorKey, type Stratum } from './sectors';
-import { LIVE_HOURS, MAX_PLAN_HOURS, activePlan, fetchPlans, fmtTime, fromInput, plansEnabled, savePlans, toInput, token, type LiveEdit, type Plan, type Tz } from './plans';
+import { LIVE_HOURS, MAX_PLAN_HOURS, activePlan, exclusiveOf, fetchPlans, fmtTime, fromInput, plansEnabled, savePlans, toInput, token, type LiveEdit, type Plan, type Tz } from './plans';
 import { icons } from './ui/icons';
 import {
   esc,
@@ -48,15 +48,16 @@ const store = {
 };
 
 /** Preview setups live only in this browser. */
-function loadPreview(): { positions: string[]; assign: [string, string][] } {
+function loadPreview(): { positions: string[]; assign: [string, string][]; exclusive: string[] } {
   try {
-    const v = JSON.parse(store.get('asx.preview') ?? '') as { positions?: unknown; assign?: unknown };
+    const v = JSON.parse(store.get('asx.preview') ?? '') as { positions?: unknown; assign?: unknown; exclusive?: unknown };
     return {
+      exclusive: Array.isArray(v.exclusive) ? v.exclusive.filter((id): id is string => typeof id === 'string' && POSITIONS.has(id)) : [],
       positions: Array.isArray(v.positions) ? v.positions.filter((id): id is string => typeof id === 'string' && POSITIONS.has(id)) : [],
       assign: Array.isArray(v.assign) ? v.assign.filter((e): e is [string, string] => Array.isArray(e) && SECTOR_BY_KEY.has(e[0]) && POSITIONS.has(e[1])) : [],
     };
   } catch {
-    return { positions: [], assign: [] };
+    return { positions: [], assign: [], exclusive: [] };
   }
 }
 const savedPreview = loadPreview();
@@ -69,6 +70,8 @@ const state = {
   preview: false,
   previewSet: new Set<string>(savedPreview.positions),
   previewAssign: new Map<string, string>(savedPreview.assign),
+  /** Preview loaded from an event: positions that cover exactly their picked sectors. */
+  previewExclusive: new Set<string>(savedPreview.exclusive),
   ownership: null as Ownership | null,
   neighborCtrls: [] as NeighborController[],
   neighborOwners: new Map<string, NeighborOwner>(),
@@ -202,6 +205,8 @@ function setupChrome() {
     onChange: (i) => (document.documentElement.dataset.sheet = ['small', 'medium', 'large'][i]),
   });
   const sheet = $('#preview-sheet');
+  // Focusing a field can scroll the (overflow: hidden) sheet itself and hide its header: keep it pinned.
+  sheet.addEventListener('scroll', () => { if (sheet.scrollTop) sheet.scrollTop = 0; });
   previewSheet = new BottomSheet(sheet, {
     detents: () => [0, sheet.offsetHeight],
     initial: 0,
@@ -271,6 +276,12 @@ function assignMap(online: Set<string>): Map<string, string> {
   return m;
 }
 
+/** Positions that cover exactly their picked sectors (event positions with sectors picked; online only). */
+function exclusiveSet(online: Set<string>): Set<string> {
+  const ids = state.preview ? state.previewExclusive : exclusiveOf(activePlan(state.plans)?.assign ?? []);
+  return new Set([...ids].filter((id) => online.has(id)));
+}
+
 /** Live mode: the running event and live edits, and how many of their assignments have their position online. */
 function planStatus(): ViewModel['plan'] {
   if (state.preview) return null;
@@ -287,7 +298,7 @@ function planStatus(): ViewModel['plan'] {
 }
 
 function savePreview() {
-  store.set('asx.preview', JSON.stringify({ positions: [...state.previewSet], assign: [...state.previewAssign] }));
+  store.set('asx.preview', JSON.stringify({ positions: [...state.previewSet], assign: [...state.previewAssign], exclusive: [...state.previewExclusive] }));
 }
 
 function viewModel(): ViewModel {
@@ -310,7 +321,7 @@ function viewModel(): ViewModel {
 function recompute() {
   const ctrls = controllers();
   const online = new Set(ctrls.map((c) => c.position));
-  state.ownership = computeOwnership(pieces, online, assignMap(online));
+  state.ownership = computeOwnership(pieces, online, assignMap(online), exclusiveSet(online));
   state.neighborCtrls = neighborControllers(state.preview ? null : state.data, facilities); // preview: no real people
   state.neighborOwners = computeNeighborOwners(neighborPieces, facilities, state.neighborCtrls);
 
@@ -428,17 +439,10 @@ function setLiveAssign(key: string, pos: string | null) {
   void commitPlans(state.plans, assign.length ? { assign, expires: Date.now() + state.liveHours * 3_600_000 } : null).then(() => { recompute(); rerenderSheet(); });
 }
 
-function setDraftAssign(key: string, pos: string | null) {
-  if (!state.draft) return;
-  if (pos) state.draft.assign.set(key, pos);
-  else state.draft.assign.delete(key);
-  recompute();
-  rerenderSheet();
-}
-
 /** Drop preview assignments whose position was switched off. */
 function prunePreviewAssign() {
   for (const [k, v] of state.previewAssign) if (!state.previewSet.has(v)) state.previewAssign.delete(k);
+  for (const id of state.previewExclusive) if (!state.previewSet.has(id)) state.previewExclusive.delete(id);
 }
 
 function renderEditHint() {
@@ -689,6 +693,7 @@ function bindUI() {
     const preset = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-preset]')?.dataset.preset;
     if ((e.target as HTMLElement).closest('[data-assign-reset]')) {
       state.previewAssign.clear();
+      state.previewExclusive.clear();
       savePreview();
       recompute();
       rerenderSheet();
@@ -696,6 +701,7 @@ function bindUI() {
     }
     if (preset === undefined) return;
     state.previewSet = new Set(preset ? preset.split(',') : []);
+    state.previewExclusive.clear();
     prunePreviewAssign();
     savePreview();
     state.preview = true;
@@ -738,10 +744,7 @@ function renderPlansSheet() {
     sc.innerHTML = renderPlanEditor({
       draft: state.draft, tz: state.tz, busy: state.busy, error: state.adminError,
       // Owners as they would be if exactly the planned positions logged on; the map itself stays live.
-      assign: {
-        ...assignOpts([...state.draft.positions].sort(), state.draft.assign, 'plan-assign'),
-        ownership: computeOwnership(pieces, state.draft.positions, state.draft.assign),
-      },
+      ownership: computeOwnership(pieces, state.draft.positions, draftAssign(state.draft), state.draft.explicit),
     });
   else if (live)
     sc.innerHTML = renderLiveEditor({
@@ -814,6 +817,7 @@ function startDraft(plan?: Plan) {
     end: plan?.end ?? start + 3 * hour,
     positions: new Set(plan?.positions ?? []),
     assign: new Map(plan?.assign ?? []),
+    explicit: exclusiveOf(plan?.assign ?? []),
     notes: new Map(Object.entries(plan?.notes ?? {})),
     isNew: !plan,
   };
@@ -828,6 +832,9 @@ function endDraft() {
   recompute();
   rerenderSheet(true);
 }
+
+/** Only picked sectors of positions in "Pick sectors" mode count. */
+const draftAssign = (d: Draft) => new Map([...d.assign].filter(([, pos]) => d.positions.has(pos) && d.explicit.has(pos)));
 
 async function saveDraft() {
   const d = state.draft;
@@ -849,7 +856,7 @@ async function saveDraft() {
   const plan: Plan = {
     id: d.id, name: d.name, start: d.start, end: d.end,
     positions: [...d.positions].sort(),
-    assign: [...d.assign].filter(([, pos]) => d.positions.has(pos)),
+    assign: [...draftAssign(d)],
     notes: Object.fromEntries([...d.notes].filter(([id, v]) => d.positions.has(id) && v.trim()).map(([id, v]) => [id, v.trim()])),
   };
   if (await commitPlans([...state.plans.filter((p) => p.id !== d.id), plan])) endDraft();
@@ -900,12 +907,16 @@ function bindPlans() {
         $(`#${id}-other`).textContent = Number.isFinite(v) ? fmtTime(v, state.tz === 'utc' ? 'local' : 'utc') : '';
       return;
     }
-    if (t.dataset.planAssign) return setDraftAssign(t.dataset.planAssign, t.value || null);
+    if (t.dataset.coverSector && t.dataset.coverPos) {
+      // A sector has one owner: ticking it here takes it from whoever had it.
+      if (t.checked) d.assign.set(t.dataset.coverSector, t.dataset.coverPos);
+      else if (d.assign.get(t.dataset.coverSector) === t.dataset.coverPos) d.assign.delete(t.dataset.coverSector);
+      return rerenderSheet();
+    }
     if (t.dataset.planPos) {
       if (t.checked) d.positions.add(t.dataset.planPos);
       else d.positions.delete(t.dataset.planPos);
-      for (const [k, v] of d.assign) if (!d.positions.has(v)) d.assign.delete(k);
-      recompute();
+      pruneDraft(d);
       rerenderSheet();
     }
   });
@@ -919,6 +930,16 @@ function bindPlans() {
       rerenderSheet();
     }
     if (el('plan-new')) startDraft();
+    const mode = el('cover-mode');
+    if (mode && state.draft) {
+      const id = mode.dataset.coverMode!;
+      if (mode.dataset.mode === 'pick') state.draft.explicit.add(id);
+      else {
+        state.draft.explicit.delete(id);
+        for (const [k, v] of state.draft.assign) if (v === id) state.draft.assign.delete(k);
+      }
+      rerenderSheet();
+    }
     if (el('live-open')) { state.adminView = 'live'; state.adminError = null; rerenderSheet(true); renderEditHint(); }
     if (el('live-done')) { state.adminView = 'list'; state.adminError = null; rerenderSheet(true); renderEditHint(); }
     if (el('live-clear') || el('live-assign-reset')) void commitPlans(state.plans, null).then(() => { recompute(); rerenderSheet(); });
@@ -928,6 +949,7 @@ function bindPlans() {
       // Load the event into the local Preview.
       state.previewSet = new Set(pvPlan.positions);
       state.previewAssign = new Map(pvPlan.assign);
+      state.previewExclusive = exclusiveOf(pvPlan.assign);
       savePreview();
       state.preview = true;
       state.adminError = null;
@@ -940,19 +962,13 @@ function bindPlans() {
     const edit = el('plan-edit')?.dataset.planEdit;
     if (edit) startDraft(state.plans.find((p) => p.id === edit));
     const del = el('plan-delete')?.dataset.planDelete;
-    if (del && confirm('Delete this plan?')) void commitPlans(state.plans.filter((p) => p.id !== del)).then(() => { recompute(); rerenderSheet(); });
+    if (del && confirm('Delete this event?')) void commitPlans(state.plans.filter((p) => p.id !== del)).then(() => { recompute(); rerenderSheet(); });
     if (el('plan-cancel')) endDraft();
     if (el('plan-save')) void saveDraft();
     const preset = el('plan-preset')?.dataset.planPreset;
     if (preset && state.draft) {
       state.draft.positions = new Set(preset.split(','));
-      for (const [k, v] of state.draft.assign) if (!state.draft.positions.has(v)) state.draft.assign.delete(k);
-      recompute();
-      rerenderSheet();
-    }
-    if (el('plan-assign-reset') && state.draft) {
-      state.draft.assign.clear();
-      recompute();
+      pruneDraft(state.draft);
       rerenderSheet();
     }
     if (el('plan-signout')) {
@@ -979,6 +995,12 @@ function bindPlans() {
   };
   window.addEventListener('hashchange', openPreviewFromHash);
   openPreviewFromHash();
+}
+
+/** Forget picks/notes of positions that are no longer expected. */
+function pruneDraft(d: Draft) {
+  for (const [k, v] of d.assign) if (!d.positions.has(v)) d.assign.delete(k);
+  for (const id of d.explicit) if (!d.positions.has(id)) d.explicit.delete(id);
 }
 
 const toInputFor = (ms: number) => toInput(ms, state.tz);
