@@ -37,14 +37,21 @@ export interface Ownership {
 /**
  * Work out who owns every piece of airspace.
  *
+ * - `assign` (sector key → position) overrides the rules below for that sector while the position is
+ *   online; LO/UH under a reassigned HI sector follow it like any other HI owner.
  * - Exactly one position online → it works all of ZME.
  * - Only combined positions (22/63/46/44) online → combined 2/3/4-way area split for all altitudes.
  * - Otherwise each stratum resolves independently: the sector's own position, then its 4/3/2-way
  *   split owner, then the stratum primary (LO 05, HI 22, UH 33). HI then falls back to the combined
  *   split; LO/UH fall back to the HI owner overhead. HI left uncovered takes the UH/LO owner there.
  */
-export function computeOwnership(pieces: Piece[], online: Set<string>): Ownership {
+export function computeOwnership(pieces: Piece[], online: Set<string>, assign: Map<string, string> = new Map()): Ownership {
   const owners = new Map<string, string | null>();
+  /** A hand-made assignment wins over the SOP, but only while its position is online. */
+  const forced = (p: Piece) => {
+    const a = assign.get(sectorKey(p.stratum, p.sector));
+    return a && online.has(a) ? a : null;
+  };
   const first = (...ids: (string | undefined)[]) => ids.find((id) => id && online.has(id)) ?? null;
   const combined = (r: Region) =>
     first(...COMBINED_SPLITS.map((split) => split[r]), COMBINED_PRIMARY);
@@ -68,8 +75,9 @@ export function computeOwnership(pieces: Piece[], online: Set<string>): Ownershi
     // HI first: LO/UH depend on it.
     const ordered = [...pieces].sort((a, b) => Number(b.stratum === 'HI') - Number(a.stratum === 'HI'));
     for (const p of ordered) {
-      let owner: string | null;
-      if (mode === 'combined') owner = combined(p.region);
+      let owner: string | null = forced(p);
+      if (owner) { /* assigned by hand */ }
+      else if (mode === 'combined') owner = combined(p.region);
       else if (p.stratum === 'HI') owner = stratumChain(p) ?? combined(p.region);
       else {
         const above = p.hi ? owners.get(p.hi) : undefined;

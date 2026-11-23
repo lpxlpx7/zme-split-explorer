@@ -3,7 +3,7 @@ import type { ColorBook } from '../colors';
 import type { NeighborController, NeighborFacility, NeighborOwner, NeighborPiece } from '../neighbors';
 import type { Ownership, Piece } from '../ownership';
 import { POSITIONS, SECTORS, SECTOR_BY_KEY, STRATA, STRATUM_INFO, sectorKey, type Sector, type Stratum } from '../sectors';
-import type { Override } from '../manual';
+import type { AssignOverride, Override } from '../manual';
 import type { OnlineController, VatsimPilot } from '../vatsim';
 import { icons } from './icons';
 
@@ -200,10 +200,66 @@ export const PRESETS: [string, string][] = [
   ['Clear', ''],
 ];
 
-export function renderPreview(preview: boolean, selected: Set<string>) {
+// ─── Sector assignments (preview + manual) ───────────────────────────────────
+export interface AssignOpts {
+  stratum: Stratum;
+  /** Positions that can be picked (online in this mode). */
+  online: string[];
+  assign: Map<string, string>;
+  /** Current owner of each sector key (after assignments). */
+  ownership: Ownership;
+  colors: ColorBook;
+  /** Attribute that marks the <select>s: data-assign (preview) or data-manual-assign. */
+  attr: 'assign' | 'manual-assign';
+  busy?: boolean;
+}
+
+export function renderAssign(o: AssignOpts) {
+  const options = (key: string) => {
+    const cur = o.assign.get(key);
+    const ids = [...o.online];
+    if (cur && !ids.includes(cur)) ids.push(cur);
+    return `<option value="">Auto (SOP)</option>${ids
+      .sort()
+      .map((id) => `<option value="${id}" ${id === cur ? 'selected' : ''}>${id} ${esc(POSITIONS.get(id)?.name ?? '')}${o.online.includes(id) ? '' : ' (offline)'}</option>`)
+      .join('')}`;
+  };
+  const rows = SECTORS.filter((s) => s.stratum === o.stratum)
+    .map((s) => {
+      const key = sectorKey(s.stratum, s.id);
+      const owners = [...(o.ownership.sectorOwners.get(key) ?? [])];
+      const manual = o.assign.has(key);
+      return `<div class="row"><span class="row-num" style="${owners[0] ? `background:color-mix(in srgb, ${o.colors.get(owners[0])} 30%, transparent)` : ''}">${s.id}</span>
+        <div class="row-main"><div>${esc(s.name)}${manual ? '<span class="tag">manual</span>' : ''}</div><small>${owners.length ? owners.map((id) => esc(ownerShort(id))).join(', ') : 'Uncovered'}</small></div>
+        <select class="assign-select" data-${o.attr}="${key}" aria-label="Who works ${s.id} ${esc(s.name)}" ${o.online.length && !o.busy ? '' : 'disabled'}>${options(key)}</select></div>`;
+    })
+    .join('');
+  const n = [...o.assign.keys()].length;
+  return `<section class="group"><h3>Sector assignments · ${STRATUM_INFO[o.stratum].label}${n ? `<span class="count">${n} manual</span>` : ''}</h3>
+    <p class="muted small" style="margin:0 4px 8px">Hand a sector to any online position. Switch the stratum at the top of the map; on a computer you can also click a sector on the map.</p>
+    <div class="inset">${rows}</div>
+    ${n ? `<div class="presets"><button class="btn" data-${o.attr}-reset ${o.busy ? 'disabled' : ''}>Reset all to SOP</button></div>` : ''}</section>`;
+}
+
+const ownerShort = (id: string) => `${id} ${POSITIONS.get(id)?.name ?? ''}`.trim();
+
+/** Floating menu shown when a sector is clicked on the map while editing. */
+export function renderAssignMenu(key: string, online: string[], assign: Map<string, string>, colors: ColorBook) {
+  const s = SECTOR_BY_KEY.get(key)!;
+  const cur = assign.get(key) ?? '';
+  const item = (id: string, label: string, color: string | null) =>
+    `<button class="menu-item${id === cur ? ' on' : ''}" data-menu-assign="${id}">${swatch(color)}<span>${label}</span></button>`;
+  return `<div class="menu-head"><span class="row-num">${s.id}</span><div><div class="tip-title">${esc(s.name)}</div><small class="muted">${STRATUM_INFO[s.stratum].label} · who works it?</small></div></div>
+    ${item('', 'Auto (SOP)', null)}
+    ${online.map((id) => item(id, `<b>${id}</b> ${esc(POSITIONS.get(id)?.name ?? '')}`, colors.get(id))).join('')}`;
+}
+
+export function renderPreview(preview: boolean, selected: Set<string>, assign: AssignOpts) {
   return `
     <label class="switch-row card-row"><span>Preview mode</span><input type="checkbox" class="switch" id="preview-toggle" ${preview ? 'checked' : ''}></label>
+    <p class="muted small" style="margin:8px 4px 0">Only on this device: nothing here is shared, and it is kept for your next visit. Link: <a href="#preview">#preview</a></p>
     <div class="presets">${PRESETS.map(([l, v]) => `<button class="btn" data-preset="${v}">${l}</button>`).join('')}</div>
+    ${selected.size ? renderAssign(assign) : ''}
     ${STRATA.map((s) => `<section class="group"><h3>${STRATUM_INFO[s].label} · ${STRATUM_INFO[s].altitude}</h3><div class="inset">${[...POSITIONS.values()]
       .filter((p) => p.stratum === s)
       .sort((a, b) => a.id.localeCompare(b.id))
@@ -215,7 +271,7 @@ export function renderPreview(preview: boolean, selected: Set<string>) {
 // ─── Manual sheet (authorised users only) ────────────────────────────────────
 export const MANUAL_HOURS = [2, 4, 8, 24];
 
-export function renderManual(opts: { signedIn: boolean; manual: Override[]; hours: number; busy: boolean; error: string | null }) {
+export function renderManual(opts: { signedIn: boolean; manual: Override[]; assign: AssignOverride[]; assignOpts: AssignOpts; hours: number; busy: boolean; error: string | null }) {
   const err = opts.error ? `<p class="form-error">${esc(opts.error)}</p>` : '';
   if (!opts.signedIn)
     return `<form id="manual-login" class="manual-login" autocomplete="off">
@@ -227,7 +283,8 @@ export function renderManual(opts: { signedIn: boolean; manual: Override[]; hour
     <p class="muted small" style="margin:4px 4px 0">For positions that are staffed but not on the VATSIM feed (event stand-by splits). They show for everyone until they expire; a real login for the same position takes over.</p>
     <label class="switch-row card-row" style="margin-top:12px"><span>Expires after</span>
       <select id="manual-hours">${MANUAL_HOURS.map((h) => `<option value="${h}" ${h === opts.hours ? 'selected' : ''}>${h} hours</option>`).join('')}</select></label>
-    <div class="presets"><button class="btn" data-manual-clear ${on.size && !opts.busy ? '' : 'disabled'}>Clear all</button><button class="btn" data-manual-signout>Sign out</button></div>
+    <div class="presets"><button class="btn" data-manual-clear ${(on.size || opts.assign.length) && !opts.busy ? '' : 'disabled'}>Clear all</button><button class="btn" data-manual-signout>Sign out</button></div>
+    ${renderAssign(opts.assignOpts)}
     ${STRATA.map((s) => `<section class="group"><h3>${STRATUM_INFO[s].label} · ${STRATUM_INFO[s].altitude}</h3><div class="inset">${[...POSITIONS.values()]
       .filter((p) => p.stratum === s)
       .sort((a, b) => a.id.localeCompare(b.id))

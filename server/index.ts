@@ -1,8 +1,10 @@
 /**
  * Self-hosted server: serves the built site (dist/) and the manual-staffing API.
  *
- *   GET  /api/overrides   public  → { positions, admin }   (admin = the Bearer token is valid)
- *   PUT  /api/overrides   Bearer  → replace the list       (only ADMIN_TOKEN may write)
+ *   GET  /api/overrides   public  → { positions, assign, admin }   (admin = the Bearer token is valid)
+ *   PUT  /api/overrides   Bearer  → replace both lists              (only ADMIN_TOKEN may write)
+ *
+ * positions: manually staffed positions · assign: sectors handed to a position by hand.
  *
  * Env: ADMIN_TOKEN (required, >= 16 chars) · PORT=8787 · HOST=127.0.0.1 · DATA_FILE=data/overrides.json
  *      STATIC_DIR=dist · ALLOWED_ORIGIN (only if the site is served from a different origin)
@@ -15,6 +17,8 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
 
 interface Override { position: string; expires: number }
+interface Assign { sector: string; position: string; expires: number }
+interface Store { positions: Override[]; assign: Assign[] }
 
 // Paths are relative to the project root (not the cwd), so any process manager can start this.
 const ROOT = resolve(import.meta.dirname, '..');
@@ -32,6 +36,7 @@ const STATIC_DIR = resolve(ROOT, process.env.STATIC_DIR ?? 'dist');
 const ORIGIN = process.env.ALLOWED_ORIGIN;
 const MAX_TTL_MS = 48 * 3_600_000;
 const MAX_ENTRIES = 40;
+const MAX_ASSIGN = 80;
 
 const sha = (s: string) => createHash('sha256').update(s).digest();
 const tokenHash = sha(TOKEN);
@@ -40,18 +45,22 @@ const isAdmin = (req: IncomingMessage) => {
   return !!given && timingSafeEqual(sha(given), tokenHash);
 };
 
-async function load(): Promise<Override[]> {
+async function load(): Promise<Store> {
   try {
-    return (JSON.parse(await readFile(DATA_FILE, 'utf8')) as Override[]).filter((o) => o.expires > Date.now());
+    const raw = JSON.parse(await readFile(DATA_FILE, 'utf8')) as Store | Override[];
+    // Older files hold just the positions array.
+    const s: Store = Array.isArray(raw) ? { positions: raw, assign: [] } : { positions: raw.positions ?? [], assign: raw.assign ?? [] };
+    const now = Date.now();
+    return { positions: s.positions.filter((o) => o.expires > now), assign: s.assign.filter((a) => a.expires > now) };
   } catch {
-    return [];
+    return { positions: [], assign: [] };
   }
 }
 
-async function save(list: Override[]) {
+async function save(store: Store) {
   await mkdir(dirname(DATA_FILE), { recursive: true });
   const tmp = `${DATA_FILE}.tmp`;
-  await writeFile(tmp, JSON.stringify(list));
+  await writeFile(tmp, JSON.stringify(store));
   await rename(tmp, DATA_FILE); // atomic: a crash never leaves a half-written file
 }
 
@@ -67,6 +76,24 @@ function sanitize(input: unknown): Override[] | null {
     if (seen.has(position) || expires <= now) continue;
     seen.add(position);
     out.push({ position, expires: Math.min(expires, now + MAX_TTL_MS) });
+  }
+  return out;
+}
+
+function sanitizeAssign(input: unknown): Assign[] | null {
+  if (input === undefined) return [];
+  if (!Array.isArray(input) || input.length > MAX_ASSIGN) return null;
+  const now = Date.now();
+  const seen = new Set<string>();
+  const out: Assign[] = [];
+  for (const a of input) {
+    const sector = typeof a?.sector === 'string' ? a.sector : '';
+    const position = typeof a?.position === 'string' ? a.position : '';
+    const expires = Number(a?.expires);
+    if (!/^(LO|HI|UH)-\d{2}$/.test(sector) || !/^\d{2}$/.test(position) || !Number.isFinite(expires)) return null;
+    if (seen.has(sector) || expires <= now) continue;
+    seen.add(sector);
+    out.push({ sector, position, expires: Math.min(expires, now + MAX_TTL_MS) });
   }
   return out;
 }
@@ -120,13 +147,15 @@ createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://x');
     if (url.pathname === '/api/overrides') {
       if (req.method === 'OPTIONS') return send(res, 204, null);
-      if (req.method === 'GET') return send(res, 200, { positions: await load(), admin: isAdmin(req) });
+      if (req.method === 'GET') return send(res, 200, { ...(await load()), admin: isAdmin(req) });
       if (req.method === 'PUT') {
         if (!isAdmin(req)) return send(res, 401, { error: 'unauthorized' });
-        const positions = sanitize(((await readBody(req)) as { positions?: unknown } | null)?.positions);
-        if (!positions) return send(res, 400, { error: 'invalid body' });
-        await save(positions);
-        return send(res, 200, { positions, admin: true });
+        const body = (await readBody(req)) as { positions?: unknown; assign?: unknown } | null;
+        const positions = sanitize(body?.positions);
+        const assign = sanitizeAssign(body?.assign);
+        if (!positions || !assign) return send(res, 400, { error: 'invalid body' });
+        await save({ positions, assign });
+        return send(res, 200, { positions, assign, admin: true });
       }
       return send(res, 405, { error: 'method not allowed' });
     }

@@ -30,7 +30,11 @@ The whole project is TypeScript: the app (`src/`) and the data build (`tools/`, 
     chains exactly (controllers matched by frequency, then callsign number).
   - The others only have an outline on VATGlasses: their centre controllers share the strip; with
     several online the map shows the first and marks it *approx.*
-- **Preview**: toggle positions or pick a preset to see a split without live data.
+- **Map labels**: every owner's position number, name and frequency is drawn on the map at all times
+  (in its own sector when it works it, otherwise in the biggest sector it has).
+- **Preview** (everyone, this device only): toggle positions or pick a preset, then hand any sector to any
+  of those positions (list in the sheet, or click a sector on the map on a computer). The setup is kept in
+  the browser's local storage and never sent anywhere. Link straight to it with `#preview`.
 
 ## Self-hosting & manual positions (private editing)
 
@@ -50,7 +54,9 @@ so never serve it over plain HTTP. Env: `HOST`, `PORT`, `DATA_FILE`, `STATIC_DIR
 Manual positions are for event days when a split is staffed but not on the VATSIM feed. Everyone sees
 the result; only the token holder can edit. Open the site with `#admin` appended, enter the token once; a
 lock button then appears in the header. Toggle positions on and choose how long they last (they expire on
-their own, max 48 h); a real login for the same position takes over automatically. Without
+their own, max 48 h); a real login for the same position takes over automatically. The same sheet lets the
+admin reassign sectors ("who is covering what" right now) to any online position, live or manual; everyone
+sees it. An assignment only applies while its position is online and also expires. Without
 `VITE_OVERRIDES_URL` the feature is absent.
 
 ## Airspace data
