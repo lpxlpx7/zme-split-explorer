@@ -19,8 +19,8 @@ export interface ViewModel {
   neighborPieces: NeighborPiece[];
   neighborCtrls: NeighborController[];
   neighborOwners: Map<string, NeighborOwner>;
-  /** Live mode: the plan in force and how many of its assignments apply (their position is online). */
-  plan: { plan: Plan; applied: number } | null;
+  /** Live mode: the event in force and live edits, with how many of their assignments apply (position online). */
+  plan: { plan: Plan | null; applied: number; liveApplied: number; liveUntil: number | null } | null;
 }
 
 export const esc = (s: unknown) =>
@@ -62,9 +62,11 @@ export function renderStatus(vm: ViewModel) {
     title = 'Stratified split';
     sub = STRATA.map((s) => `${s} ${count(s)}-way`).join(' · ');
   }
-  const plan = vm.plan?.applied
-    ? `<div class="status-plan">${icons.calendar}Planned split · until ${esc(fmtTime(vm.plan.plan.end, 'utc', false))}</div>`
-    : '';
+  const st = vm.plan;
+  const plan = [
+    st?.plan && st.applied ? `<div class="status-plan">${icons.calendar}${esc(st.plan.name)} · until ${esc(fmtTime(st.plan.end, 'utc', false))}</div>` : '',
+    st?.liveApplied && st.liveUntil ? `<div class="status-plan live-edit">${icons.sliders}Adjusted live · until ${esc(fmtTime(st.liveUntil, 'utc', false))}</div>` : '',
+  ].join('');
   return `<div class="status-icon ${o.mode}">${o.mode === 'offline' ? icons.moon : icons.radar}</div>
     <div class="status-text"><div class="status-title">${esc(title)}</div><div class="status-sub">${esc(sub)}</div>${plan}</div>`;
 }
@@ -214,7 +216,7 @@ export interface AssignOpts {
   ownership: Ownership;
   colors: ColorBook;
   /** Attribute that marks the <select>s: data-assign (preview) or data-plan-assign. */
-  attr: 'assign' | 'plan-assign';
+  attr: 'assign' | 'plan-assign' | 'live-assign';
   busy?: boolean;
 }
 
@@ -240,7 +242,11 @@ export function renderAssign(o: AssignOpts) {
     .join('');
   const n = [...o.assign.keys()].length;
   return `<section class="group"><h3>Sector assignments · ${STRATUM_INFO[o.stratum].label}${n ? `<span class="count">${n} manual</span>` : ''}</h3>
-    <p class="muted small" style="margin:0 4px 8px">${o.attr === 'plan-assign' ? 'Hand a sector to any expected position. It only applies while that position is really online. Switch the stratum at the top of the map.' : 'Hand a sector to any position you switched on. Switch the stratum at the top of the map; on a computer you can also click a sector on the map.'}</p>
+    <p class="muted small" style="margin:0 4px 8px">${{
+      'plan-assign': 'Hand a sector to any expected position. It only applies while that position is really online. Switch the stratum at the top of the map.',
+      'live-assign': 'Applies right now, on top of any running event. Only positions online on VATSIM can be picked. Switch the stratum at the top of the map; on a computer you can also click a sector on the map.',
+      assign: 'Hand a sector to any position you switched on. Switch the stratum at the top of the map; on a computer you can also click a sector on the map.',
+    }[o.attr]}</p>
     <div class="inset">${rows}</div>
     ${n ? `<div class="presets"><button class="btn" data-${o.attr}-reset ${o.busy ? 'disabled' : ''}>Reset all to SOP</button></div>` : ''}</section>`;
 }
@@ -288,31 +294,63 @@ const tzSwitch = (tz: Tz) => `<div class="segmented small tz" style="--i:${tz ==
 
 const other = (tz: Tz): Tz => (tz === 'utc' ? 'local' : 'utc');
 
-export function renderPlanList(opts: { plans: Plan[]; tz: Tz; busy: boolean; error: string | null; now: number }) {
+export interface LiveInfo {
+  /** Positions online on VATSIM. */
+  online: string[];
+  event: Plan | null;
+  edits: number;
+  expires: number | null;
+}
+
+export function renderPlanList(opts: { plans: Plan[]; tz: Tz; busy: boolean; error: string | null; now: number; live: LiveInfo }) {
   const err = opts.error ? `<p class="form-error">${esc(opts.error)}</p>` : '';
+  const l = opts.live;
+  const liveCard = `<article class="plan live-card">
+      <div class="plan-time"><div>Live now</div><small class="muted">Online on VATSIM: ${l.online.length ? l.online.map((id) => `<b>${id}</b>`).join(' ') : 'nobody'}</small></div>
+      <small class="muted">${l.event ? `Event running: <b>${esc(l.event.name)}</b>` : 'No event running'} · ${l.edits ? `${l.edits} live edit${l.edits > 1 ? 's' : ''}, until ${esc(fmtTime(l.expires!, opts.tz, false))}` : 'no live edits'}</small>
+      <div class="plan-foot"><small class="muted">Live edits win over the event.</small><button class="btn tinted" data-live-open ${opts.busy ? 'disabled' : ''}>Edit live</button></div>
+    </article>`;
   const cards = [...opts.plans]
     .sort((a, b) => a.start - b.start)
     .map((p) => {
       const active = p.start <= opts.now && opts.now < p.end;
       const chips = p.positions.map((id) => `<span class="chip"><b>${id}</b>${esc(POSITIONS.get(id)?.name ?? '')}</span>`).join('');
+      const notes = Object.entries(p.notes ?? {}).filter(([, v]) => v);
       return `<article class="plan${active ? ' active' : ''}">
-        <div class="plan-time"><div>${esc(fmtRange(p.start, p.end, opts.tz))}${active ? '<span class="tag on">Now</span>' : ''}</div>
+        <div class="plan-name">${esc(p.name)}${active ? '<span class="tag on">Now</span>' : ''}</div>
+        <div class="plan-time"><div>${esc(fmtRange(p.start, p.end, opts.tz))}</div>
           <small class="muted">${esc(fmtRange(p.start, p.end, other(opts.tz)))}</small></div>
         <div class="chips">${chips || '<span class="muted small">No positions</span>'}</div>
+        ${notes.length ? `<ul class="plan-notes">${notes.map(([id, v]) => `<li><b>${id}</b> ${esc(v)}</li>`).join('')}</ul>` : ''}
         <div class="plan-foot"><small class="muted">${p.assign.length ? `${p.assign.length} sector assignment${p.assign.length > 1 ? 's' : ''}` : 'SOP split'}</small>
-          <span><button class="btn" data-plan-edit="${p.id}" ${opts.busy ? 'disabled' : ''}>Edit</button> <button class="btn danger" data-plan-delete="${p.id}" ${opts.busy ? 'disabled' : ''}>Delete</button></span></div>
+          <span class="plan-btns"><button class="btn" data-plan-preview="${p.id}">Preview</button><button class="btn" data-plan-edit="${p.id}" ${opts.busy ? 'disabled' : ''}>Edit</button><button class="btn danger" data-plan-delete="${p.id}" ${opts.busy ? 'disabled' : ''}>Delete</button></span></div>
       </article>`;
     })
     .join('');
   return `${err}
-    <p class="muted small" style="margin:4px 4px 0">Say ahead of time which positions are expected and who covers which sector. Live logins always decide: while a plan runs it only applies to positions that are actually online; the rest is ignored.</p>
     ${tzSwitch(opts.tz)}
-    <div class="presets"><button class="btn tinted" data-plan-new ${opts.busy ? 'disabled' : ''}>New plan</button><button class="btn" data-plan-signout>Sign out</button></div>
-    <div class="list">${cards || '<div class="empty-state"><p>No planned splits.</p></div>'}</div>
+    <div class="list">${liveCard}</div>
+    <section class="group"><h3>Events<span class="count">${opts.plans.length}</span></h3>
+      <p class="muted small" style="margin:0 4px 8px">Say ahead of time which positions are expected and who covers which sector. VATSIM decides who is online: an event only applies to its positions that are really logged on.</p>
+      <div class="presets" style="margin-top:0"><button class="btn tinted" data-plan-new ${opts.busy ? 'disabled' : ''}>New event</button><button class="btn" data-plan-signout>Sign out</button></div>
+      <div class="list">${cards || '<div class="empty-state"><p>No events planned.</p></div>'}</div></section>
     <div style="height:calc(24px + var(--safe-bottom))"></div>`;
 }
 
-export interface Draft { id: string; start: number; end: number; positions: Set<string>; assign: Map<string, string>; isNew: boolean }
+export function renderLiveEditor(opts: { hours: number; hoursOptions: number[]; expires: number | null; tz: Tz; busy: boolean; error: string | null; assign: AssignOpts }) {
+  const err = opts.error ? `<p class="form-error">${esc(opts.error)}</p>` : '';
+  const none = !opts.assign.online.length;
+  return `${err}
+    <p class="muted small" style="margin:4px 4px 0">Who covers which sector right now. Saved immediately and shown to everyone; wins over a running event. Who is online always comes from VATSIM.</p>
+    <label class="switch-row card-row" style="margin-top:12px"><span>Keep live edits for</span>
+      <select id="live-hours">${opts.hoursOptions.map((h) => `<option value="${h}" ${h === opts.hours ? 'selected' : ''}>${h} hour${h > 1 ? 's' : ''}</option>`).join('')}</select></label>
+    ${opts.expires ? `<p class="muted small" style="margin:6px 4px 0">Current live edits end at ${esc(fmtTime(opts.expires, opts.tz))} (${esc(fmtTime(opts.expires, other(opts.tz)))}).</p>` : ''}
+    <div class="presets"><button class="btn" data-live-done>‹ Back to events</button><button class="btn danger" data-live-clear ${opts.assign.assign.size && !opts.busy ? '' : 'disabled'}>Clear live edits</button></div>
+    ${none ? '<div class="empty-state"><p>No Memphis Center positions are online on VATSIM.</p></div>' : renderAssign(opts.assign)}
+    <div style="height:calc(24px + var(--safe-bottom))"></div>`;
+}
+
+export interface Draft { id: string; name: string; start: number; end: number; positions: Set<string>; assign: Map<string, string>; notes: Map<string, string>; isNew: boolean }
 
 export function renderPlanEditor(opts: { draft: Draft; tz: Tz; busy: boolean; error: string | null; assign: AssignOpts }) {
   const d = opts.draft;
@@ -325,13 +363,17 @@ export function renderPlanEditor(opts: { draft: Draft; tz: Tz; busy: boolean; er
     .sort((a, b) => a.id.localeCompare(b.id))
     .map((p) => `<label class="pos-chip"><input type="checkbox" data-plan-pos="${p.id}" ${d.positions.has(p.id) ? 'checked' : ''}><b>${p.id}</b> ${esc(p.name)}</label>`)
     .join('')}</div></section>`).join('');
+  const notes = [...d.positions].sort().map((id) => `<div class="row"><span class="row-num">${id}</span><div class="row-main note-name">${esc(POSITIONS.get(id)?.name ?? '')}</div>
+      <input class="note-input" data-plan-note="${id}" maxlength="120" placeholder="Optional note" value="${esc(d.notes.get(id) ?? '')}"></div>`).join('');
   return `${err}
+    <label class="name-row card-row"><span>Name</span><input id="plan-name" maxlength="60" placeholder="e.g. Memphis FNO" value="${esc(d.name)}"></label>
     ${tzSwitch(opts.tz)}
     <div class="time-fields">${field('plan-start', 'Start', d.start)}${field('plan-end', 'End', d.end)}</div>
     <section class="group"><h3>Expected positions</h3>
       <div class="presets" style="margin-top:0">${PRESETS.filter(([, v]) => v).map(([l, v]) => `<button class="btn" data-plan-preset="${v}">${l}</button>`).join('')}</div></section>
     ${posGroups}
+    ${notes ? `<section class="group"><h3>Notes · only you can see them</h3><div class="inset">${notes}</div></section>` : ''}
     ${d.positions.size ? renderAssign(opts.assign) : ''}
-    <div class="presets sticky-actions"><button class="btn tinted" data-plan-save ${opts.busy ? 'disabled' : ''}>Save plan</button><button class="btn" data-plan-cancel>Cancel</button></div>
+    <div class="presets sticky-actions"><button class="btn tinted" data-plan-save ${opts.busy ? 'disabled' : ''}>Save event</button><button class="btn" data-plan-cancel>Cancel</button></div>
     <div style="height:calc(24px + var(--safe-bottom))"></div>`;
 }

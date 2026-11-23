@@ -5,6 +5,8 @@
  */
 export interface Plan {
   id: string;
+  /** Event name, e.g. "Memphis FNO". */
+  name: string;
   /** Epoch ms, [start, end). */
   start: number;
   end: number;
@@ -12,9 +14,19 @@ export interface Plan {
   positions: string[];
   /** [sector key, position] pairs: "HI-30" → "31". */
   assign: [string, string][];
+  /** Admin-only remarks per expected position (never sent to other visitors). */
+  notes?: Record<string, string>;
+}
+
+/** Sector assignments the admin makes for right now; they beat a running event, sector by sector. */
+export interface LiveEdit {
+  assign: [string, string][];
+  /** Epoch ms. */
+  expires: number;
 }
 
 export const MAX_PLAN_HOURS = 72;
+export const LIVE_HOURS = [1, 2, 4, 8, 12, 24];
 
 const BASE = (import.meta.env.VITE_OVERRIDES_URL as string | undefined)?.replace(/\/$/, '');
 export const plansEnabled = !!BASE;
@@ -25,7 +37,7 @@ export const token = {
   set: (v: string) => { try { v ? localStorage.setItem(TOKEN_KEY, v) : localStorage.removeItem(TOKEN_KEY); } catch { /* private mode */ } },
 };
 
-export interface Reply { plans: Plan[]; admin: boolean }
+export interface Reply { plans: Plan[]; live: LiveEdit | null; admin: boolean }
 
 async function call(init: RequestInit & { token?: string }): Promise<Reply> {
   const headers: Record<string, string> = { ...(init.body ? { 'Content-Type': 'application/json' } : {}) };
@@ -35,11 +47,12 @@ async function call(init: RequestInit & { token?: string }): Promise<Reply> {
   if (res.status === 400) throw new Error('The server rejected this plan');
   if (!res.ok) throw new Error(`Backend returned HTTP ${res.status}`);
   const r = (await res.json()) as Partial<Reply>;
-  return { plans: r.plans ?? [], admin: !!r.admin };
+  return { plans: r.plans ?? [], live: r.live && r.live.expires > Date.now() ? r.live : null, admin: !!r.admin };
 }
 
 export const fetchPlans = (t = token.get()) => call({ token: t });
-export const savePlans = (t: string, plans: Plan[]) => call({ method: 'PUT', token: t, body: JSON.stringify({ plans }) });
+export const savePlans = (t: string, plans: Plan[], live: LiveEdit | null) =>
+  call({ method: 'PUT', token: t, body: JSON.stringify({ plans, live }) });
 
 /** The plan in force at `now` (the most recently started one if several overlap). */
 export function activePlan(plans: Plan[], now = Date.now()): Plan | null {

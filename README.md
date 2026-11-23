@@ -52,16 +52,19 @@ Put nginx/Caddy with HTTPS in front (proxy everything to 127.0.0.1:8787) - the t
 so never serve it over plain HTTP. Env: `HOST`, `PORT`, `DATA_FILE`, `STATIC_DIR`, `ALLOWED_ORIGIN`
 (only needed if the site is served from a different origin than the API).
 
-**Planned splits** let the admin say ahead of time, for a time window, which positions are expected and who
-covers which sector. Open the site with `#admin` appended, enter the token once; a calendar button then
-appears in the header. Times are entered in UTC or your local zone (toggle; the other zone is shown next to
-it), up to 72 h per plan and 90 days ahead. Editing a plan never changes the map: it stays live, and the
-plan's resulting owners are listed in the editor.
+Open the site with `#admin` appended and enter the token once; a calendar button then appears in the header.
+Who is online **always** comes from VATSIM; the admin only decides who covers which sector.
 
-Live logins always decide: the map only ever shows positions that are really online. While a plan runs,
-its sector assignments apply to those of its positions that are online; planned positions that are not
-online are ignored and not shown. Finished plans are deleted automatically. Without `VITE_OVERRIDES_URL`
-the feature is absent.
+- **Events**: a name, a time window (entered in UTC or local time, the other zone shown next to it; up to
+  72 h, up to 90 days ahead), the expected positions, optional sector assignments and an optional note per
+  position. Notes are only ever sent to the admin. Each event has a **Preview** button that loads it into
+  your local Preview. Finished events are deleted automatically; overlapping events: the later start wins.
+- **Live edits**: sector assignments for right now, saved immediately and shown to everyone. They win over a
+  running event, sector by sector, and expire after the time you choose (1-24 h).
+
+Every assignment (event or live) only applies while its position is online on VATSIM; otherwise that sector
+falls back to the event, then to the SOP. Editing an event never changes the map. Without
+`VITE_OVERRIDES_URL` the feature is absent.
 
 ## Airspace data
 

@@ -13,7 +13,7 @@ import {
 } from './neighbors';
 import { computeOwnership, type Ownership, type Piece } from './ownership';
 import { POSITIONS, SECTORS, SECTOR_BY_KEY, STRATA, STRATUM_INFO, sectorKey, type Stratum } from './sectors';
-import { MAX_PLAN_HOURS, activePlan, fetchPlans, fmtTime, fromInput, plansEnabled, savePlans, toInput, token, type Plan, type Tz } from './plans';
+import { LIVE_HOURS, MAX_PLAN_HOURS, activePlan, fetchPlans, fmtTime, fromInput, plansEnabled, savePlans, toInput, token, type LiveEdit, type Plan, type Tz } from './plans';
 import { icons } from './ui/icons';
 import {
   esc,
@@ -23,6 +23,7 @@ import {
   renderControllers,
   renderNeighbors,
   renderAssignMenu,
+  renderLiveEditor,
   renderLogin,
   renderPlanEditor,
   renderPlanList,
@@ -76,6 +77,11 @@ const state = {
   lastFetch: 0,
   selectedPilot: null as string | null,
   plans: [] as Plan[],
+  /** Admin's sector assignments for right now (beat the running event). */
+  liveEdit: null as LiveEdit | null,
+  liveHours: 4,
+  /** Admin sheet: event list, or the live editor. */
+  adminView: 'list' as 'list' | 'live',
   admin: false,
   /** Plan being created/edited in the admin sheet (shown on the map while the sheet is open). */
   draft: null as Draft | null,
@@ -229,6 +235,7 @@ async function refreshPlans() {
   try {
     const r = await fetchPlans();
     state.plans = r.plans;
+    state.liveEdit = r.live;
     state.admin = r.admin;
   } catch { /* backend unreachable — keep what we had */ }
   $('#plans-btn').hidden = !state.admin;
@@ -251,19 +258,32 @@ function controllers(): OnlineController[] {
   return state.live;
 }
 
-/** Sector → position assignments in force for the current mode. */
-function assignMap(): Map<string, string> {
+const liveEdits = (): [string, string][] => (state.liveEdit && state.liveEdit.expires > Date.now() ? state.liveEdit.assign : []);
+
+/**
+ * Sector → position assignments in force. Live: the running event, then the admin's live edits on top,
+ * each only where its position is online (so an offline live edit falls back to the event, then the SOP).
+ */
+function assignMap(online: Set<string>): Map<string, string> {
   if (state.preview) return state.previewAssign;
-  return new Map(activePlan(state.plans)?.assign ?? []);
+  const m = new Map<string, string>();
+  for (const [k, v] of [...(activePlan(state.plans)?.assign ?? []), ...liveEdits()]) if (online.has(v)) m.set(k, v);
+  return m;
 }
 
-/** Live mode: the running plan and how many of its assignments have their position online. */
+/** Live mode: the running event and live edits, and how many of their assignments have their position online. */
 function planStatus(): ViewModel['plan'] {
   if (state.preview) return null;
   const plan = activePlan(state.plans);
-  if (!plan) return null;
   const online = new Set(state.live.map((c) => c.position));
-  return { plan, applied: plan.assign.filter(([, pos]) => online.has(pos)).length };
+  const live = liveEdits();
+  if (!plan && !live.length) return null;
+  return {
+    plan,
+    applied: plan ? plan.assign.filter(([, pos]) => online.has(pos)).length : 0,
+    liveApplied: live.filter(([, pos]) => online.has(pos)).length,
+    liveUntil: live.length ? state.liveEdit!.expires : null,
+  };
 }
 
 function savePreview() {
@@ -290,7 +310,7 @@ function viewModel(): ViewModel {
 function recompute() {
   const ctrls = controllers();
   const online = new Set(ctrls.map((c) => c.position));
-  state.ownership = computeOwnership(pieces, online, assignMap());
+  state.ownership = computeOwnership(pieces, online, assignMap(online));
   state.neighborCtrls = neighborControllers(state.preview ? null : state.data, facilities); // preview: no real people
   state.neighborOwners = computeNeighborOwners(neighborPieces, facilities, state.neighborCtrls);
 
@@ -382,6 +402,8 @@ function editor(): Editor | null {
   if (!sheetOpen()) return null;
   if (state.sheet === 'preview' && state.preview)
     return { online: [...state.previewSet].sort(), assign: state.previewAssign, set: setPreviewAssign };
+  if (state.sheet === 'plans' && state.admin && state.adminView === 'live' && !state.draft)
+    return { online: liveOnline(), assign: new Map(liveEdits()), set: setLiveAssign };
   return null;
 }
 
@@ -395,6 +417,15 @@ function setPreviewAssign(key: string, pos: string | null) {
   savePreview();
   recompute();
   rerenderSheet();
+}
+
+const liveOnline = () => [...new Set(state.live.map((c) => c.position))].sort();
+
+/** Live edits are saved at once; changing one restarts the expiry clock. */
+function setLiveAssign(key: string, pos: string | null) {
+  const rest = liveEdits().filter(([k]) => k !== key);
+  const assign: [string, string][] = pos ? [...rest, [key, pos]] : rest;
+  void commitPlans(state.plans, assign.length ? { assign, expires: Date.now() + state.liveHours * 3_600_000 } : null).then(() => { recompute(); rerenderSheet(); });
 }
 
 function setDraftAssign(key: string, pos: string | null) {
@@ -698,8 +729,9 @@ function renderPreviewSheet() {
 }
 
 function renderPlansSheet() {
-  $('#sheet-title').textContent = state.draft ? (state.draft.isNew ? 'New plan' : 'Edit plan') : 'Planned splits';
-  $('#sheet-sub').textContent = state.draft ? 'The map stays live; the list below shows this plan.' : 'Visible to everyone · only you can edit';
+  const live = state.adminView === 'live' && !state.draft;
+  $('#sheet-title').textContent = state.draft ? (state.draft.isNew ? 'New event' : 'Edit event') : live ? 'Live edits' : 'Events';
+  $('#sheet-sub').textContent = state.draft ? 'The map stays live; the list below shows this event.' : live ? 'Visible to everyone right away' : 'Visible to everyone · only you can edit';
   const sc = $('#preview-scroll');
   if (!state.admin) sc.innerHTML = renderLogin(state.busy, state.adminError);
   else if (state.draft)
@@ -711,7 +743,17 @@ function renderPlansSheet() {
         ownership: computeOwnership(pieces, state.draft.positions, state.draft.assign),
       },
     });
-  else sc.innerHTML = renderPlanList({ plans: state.plans, tz: state.tz, busy: state.busy, error: state.adminError, now: Date.now() });
+  else if (live)
+    sc.innerHTML = renderLiveEditor({
+      hours: state.liveHours, hoursOptions: LIVE_HOURS, expires: liveEdits().length ? state.liveEdit!.expires : null,
+      tz: state.tz, busy: state.busy, error: state.adminError,
+      assign: assignOpts(liveOnline(), new Map(liveEdits()), 'live-assign'),
+    });
+  else
+    sc.innerHTML = renderPlanList({
+      plans: state.plans, tz: state.tz, busy: state.busy, error: state.adminError, now: Date.now(),
+      live: { online: liveOnline(), event: activePlan(state.plans), edits: liveEdits().length, expires: state.liveEdit?.expires ?? null },
+    });
 }
 
 function openSheet(mode: 'preview' | 'plans') {
@@ -723,13 +765,15 @@ function openSheet(mode: 'preview' | 'plans') {
   togglePreview(true);
 }
 
-async function commitPlans(next: Plan[]): Promise<boolean> {
+async function commitPlans(next: Plan[], live: LiveEdit | null = state.liveEdit): Promise<boolean> {
   state.busy = true;
   state.adminError = null;
   rerenderSheet();
   let ok = false;
   try {
-    state.plans = (await savePlans(token.get(), next)).plans;
+    const r = await savePlans(token.get(), next, live && live.expires > Date.now() ? live : null);
+    state.plans = r.plans;
+    state.liveEdit = r.live;
     ok = true;
   } catch (e) {
     state.adminError = e instanceof Error ? e.message : String(e);
@@ -748,6 +792,7 @@ async function signIn(value: string) {
     token.set(value);
     state.admin = true;
     state.plans = r.plans;
+    state.liveEdit = r.live;
     $('#plans-btn').hidden = false;
   } catch (e) {
     state.adminError = e instanceof Error ? e.message : String(e);
@@ -764,10 +809,12 @@ function startDraft(plan?: Plan) {
   const start = plan?.start ?? Math.ceil(Date.now() / hour) * hour;
   state.draft = {
     id: plan?.id ?? newId(),
+    name: plan?.name ?? '',
     start,
     end: plan?.end ?? start + 3 * hour,
     positions: new Set(plan?.positions ?? []),
     assign: new Map(plan?.assign ?? []),
+    notes: new Map(Object.entries(plan?.notes ?? {})),
     isNew: !plan,
   };
   state.adminError = null;
@@ -785,11 +832,13 @@ function endDraft() {
 async function saveDraft() {
   const d = state.draft;
   if (!d) return;
+  d.name = d.name.trim();
   const err =
-    !Number.isFinite(d.start) || !Number.isFinite(d.end) ? 'Enter a start and an end time.'
+    !d.name ? 'Give the event a name.'
+    : !Number.isFinite(d.start) || !Number.isFinite(d.end) ? 'Enter a start and an end time.'
     : d.end <= d.start ? 'The end must be after the start.'
     : d.end <= Date.now() ? 'This window is already over.'
-    : d.end - d.start > MAX_PLAN_HOURS * 3_600_000 ? `A plan can last at most ${MAX_PLAN_HOURS} hours.`
+    : d.end - d.start > MAX_PLAN_HOURS * 3_600_000 ? `An event can last at most ${MAX_PLAN_HOURS} hours.`
     : !d.positions.size ? 'Pick at least one expected position.'
     : null;
   if (err) {
@@ -798,9 +847,10 @@ async function saveDraft() {
     return;
   }
   const plan: Plan = {
-    id: d.id, start: d.start, end: d.end,
+    id: d.id, name: d.name, start: d.start, end: d.end,
     positions: [...d.positions].sort(),
     assign: [...d.assign].filter(([, pos]) => d.positions.has(pos)),
+    notes: Object.fromEntries([...d.notes].filter(([id, v]) => d.positions.has(id) && v.trim()).map(([id, v]) => [id, v.trim()])),
   };
   if (await commitPlans([...state.plans.filter((p) => p.id !== d.id), plan])) endDraft();
   else rerenderSheet();
@@ -814,10 +864,27 @@ function bindPlans() {
     const v = $<HTMLInputElement>('#plan-token').value.trim();
     if (v) void signIn(v);
   });
-  sheet.addEventListener('change', (e) => {
+  // Typing in name/notes updates the draft without re-rendering (keeps focus).
+  sheet.addEventListener('input', (e) => {
     const t = e.target as HTMLInputElement;
     const d = state.draft;
     if (!d || state.sheet !== 'plans') return;
+    if (t.id === 'plan-name') d.name = t.value;
+    if (t.dataset.planNote) d.notes.set(t.dataset.planNote, t.value);
+  });
+  sheet.addEventListener('change', (e) => {
+    const t = e.target as HTMLInputElement;
+    if (state.sheet !== 'plans') return;
+    if (t.id === 'live-hours') {
+      state.liveHours = Number(t.value);
+      // Re-time the current live edits from now.
+      const live = liveEdits();
+      if (live.length) void commitPlans(state.plans, { assign: live, expires: Date.now() + state.liveHours * 3_600_000 }).then(() => rerenderSheet());
+      return;
+    }
+    if (t.dataset.liveAssign) return setLiveAssign(t.dataset.liveAssign, t.value || null);
+    const d = state.draft;
+    if (!d) return;
     if (t.id === 'plan-start' || t.id === 'plan-end') {
       const ms = fromInput(t.value, state.tz);
       if (t.id === 'plan-start') {
@@ -852,6 +919,24 @@ function bindPlans() {
       rerenderSheet();
     }
     if (el('plan-new')) startDraft();
+    if (el('live-open')) { state.adminView = 'live'; state.adminError = null; rerenderSheet(true); renderEditHint(); }
+    if (el('live-done')) { state.adminView = 'list'; state.adminError = null; rerenderSheet(true); renderEditHint(); }
+    if (el('live-clear') || el('live-assign-reset')) void commitPlans(state.plans, null).then(() => { recompute(); rerenderSheet(); });
+    const pv = el('plan-preview')?.dataset.planPreview;
+    const pvPlan = pv && state.plans.find((p) => p.id === pv);
+    if (pvPlan) {
+      // Load the event into the local Preview.
+      state.previewSet = new Set(pvPlan.positions);
+      state.previewAssign = new Map(pvPlan.assign);
+      savePreview();
+      state.preview = true;
+      state.adminError = null;
+      state.sheet = 'preview';
+      recompute();
+      rerenderSheet(true);
+      renderEditHint();
+      return;
+    }
     const edit = el('plan-edit')?.dataset.planEdit;
     if (edit) startDraft(state.plans.find((p) => p.id === edit));
     const del = el('plan-delete')?.dataset.planDelete;
@@ -874,6 +959,7 @@ function bindPlans() {
       token.set('');
       state.admin = false;
       state.draft = null;
+      state.adminView = 'list';
       $('#plans-btn').hidden = true;
       recompute();
       rerenderSheet();
