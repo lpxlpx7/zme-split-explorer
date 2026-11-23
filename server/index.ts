@@ -1,14 +1,13 @@
 /**
- * Self-hosted server: serves the built site (dist/) and the manual-staffing API.
+ * Self-hosted server: serves the built site (dist/) and the planned-splits API.
  *
- *   GET  /api/overrides   public  → { positions, assign, admin }   (admin = the Bearer token is valid)
- *   PUT  /api/overrides   Bearer  → replace both lists              (only ADMIN_TOKEN may write)
+ *   GET  /api/plans   public  → { plans, admin }   (admin = the Bearer token is valid)
+ *   PUT  /api/plans   Bearer  → replace the list   (only ADMIN_TOKEN may write)
  *
- * positions: manually staffed positions · assign: sectors handed to a position by hand.
- *
- * Env: ADMIN_TOKEN (required, >= 16 chars) · PORT=8787 · HOST=127.0.0.1 · DATA_FILE=data/overrides.json
+ * A plan says, for a time window, which positions are expected and who covers which sector.
+ * Env: ADMIN_TOKEN (required, >= 16 chars) · PORT=8787 · HOST=127.0.0.1 · DATA_FILE=data/plans.json
  *      STATIC_DIR=dist · ALLOWED_ORIGIN (only if the site is served from a different origin)
- * Entries always expire (max 48 h), so a forgotten one clears itself.
+ * Finished plans are dropped automatically.
  */
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { createReadStream } from 'node:fs';
@@ -16,9 +15,7 @@ import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
 
-interface Override { position: string; expires: number }
-interface Assign { sector: string; position: string; expires: number }
-interface Store { positions: Override[]; assign: Assign[] }
+interface Plan { id: string; start: number; end: number; positions: string[]; assign: [string, string][] }
 
 // Paths are relative to the project root (not the cwd), so any process manager can start this.
 const ROOT = resolve(import.meta.dirname, '..');
@@ -31,12 +28,12 @@ if (TOKEN.length < 16) {
 }
 const PORT = Number(process.env.PORT ?? 8787);
 const HOST = process.env.HOST ?? '127.0.0.1';
-const DATA_FILE = resolve(ROOT, process.env.DATA_FILE ?? 'data/overrides.json');
+const DATA_FILE = resolve(ROOT, process.env.DATA_FILE ?? 'data/plans.json');
 const STATIC_DIR = resolve(ROOT, process.env.STATIC_DIR ?? 'dist');
 const ORIGIN = process.env.ALLOWED_ORIGIN;
-const MAX_TTL_MS = 48 * 3_600_000;
-const MAX_ENTRIES = 40;
-const MAX_ASSIGN = 80;
+const MAX_PLAN_MS = 72 * 3_600_000;
+const MAX_AHEAD_MS = 90 * 86_400_000;
+const MAX_PLANS = 50;
 
 const sha = (s: string) => createHash('sha256').update(s).digest();
 const tokenHash = sha(TOKEN);
@@ -45,60 +42,55 @@ const isAdmin = (req: IncomingMessage) => {
   return !!given && timingSafeEqual(sha(given), tokenHash);
 };
 
-async function load(): Promise<Store> {
+async function load(): Promise<Plan[]> {
   try {
-    const raw = JSON.parse(await readFile(DATA_FILE, 'utf8')) as Store | Override[];
-    // Older files hold just the positions array.
-    const s: Store = Array.isArray(raw) ? { positions: raw, assign: [] } : { positions: raw.positions ?? [], assign: raw.assign ?? [] };
-    const now = Date.now();
-    return { positions: s.positions.filter((o) => o.expires > now), assign: s.assign.filter((a) => a.expires > now) };
+    const raw = JSON.parse(await readFile(DATA_FILE, 'utf8')) as { plans?: Plan[] };
+    return (raw.plans ?? []).filter((p) => p.end > Date.now());
   } catch {
-    return { positions: [], assign: [] };
+    return [];
   }
 }
 
-async function save(store: Store) {
+async function save(plans: Plan[]) {
   await mkdir(dirname(DATA_FILE), { recursive: true });
   const tmp = `${DATA_FILE}.tmp`;
-  await writeFile(tmp, JSON.stringify(store));
+  await writeFile(tmp, JSON.stringify({ plans }));
   await rename(tmp, DATA_FILE); // atomic: a crash never leaves a half-written file
 }
 
-function sanitize(input: unknown): Override[] | null {
-  if (!Array.isArray(input) || input.length > MAX_ENTRIES) return null;
+const POS = /^\d{2}$/;
+const SECTOR = /^(LO|HI|UH)-\d{2}$/;
+
+/** Validate the whole list; null if anything is malformed. Finished plans are dropped. */
+function sanitize(input: unknown): Plan[] | null {
+  if (!Array.isArray(input) || input.length > MAX_PLANS) return null;
   const now = Date.now();
-  const seen = new Set<string>();
-  const out: Override[] = [];
-  for (const o of input) {
-    const position = typeof o?.position === 'string' ? o.position : '';
-    const expires = Number(o?.expires);
-    if (!/^\d{2}$/.test(position) || !Number.isFinite(expires)) return null;
-    if (seen.has(position) || expires <= now) continue;
-    seen.add(position);
-    out.push({ position, expires: Math.min(expires, now + MAX_TTL_MS) });
+  const ids = new Set<string>();
+  const out: Plan[] = [];
+  for (const p of input) {
+    const id = typeof p?.id === 'string' ? p.id : '';
+    const start = Number(p?.start);
+    const end = Number(p?.end);
+    if (!/^[a-z0-9]{1,24}$/.test(id) || ids.has(id)) return null;
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start || end - start > MAX_PLAN_MS || start > now + MAX_AHEAD_MS) return null;
+    if (!Array.isArray(p.positions) || p.positions.length > 40 || !p.positions.every((x: unknown) => typeof x === 'string' && POS.test(x))) return null;
+    const positions = [...new Set<string>(p.positions)];
+    if (!Array.isArray(p.assign) || p.assign.length > 80) return null;
+    const assign: [string, string][] = [];
+    const seen = new Set<string>();
+    for (const a of p.assign) {
+      if (!Array.isArray(a) || typeof a[0] !== 'string' || typeof a[1] !== 'string' || !SECTOR.test(a[0]) || !POS.test(a[1])) return null;
+      if (seen.has(a[0]) || !positions.includes(a[1])) continue;
+      seen.add(a[0]);
+      assign.push([a[0], a[1]]);
+    }
+    ids.add(id);
+    if (end > now) out.push({ id, start, end, positions, assign });
   }
   return out;
 }
 
-function sanitizeAssign(input: unknown): Assign[] | null {
-  if (input === undefined) return [];
-  if (!Array.isArray(input) || input.length > MAX_ASSIGN) return null;
-  const now = Date.now();
-  const seen = new Set<string>();
-  const out: Assign[] = [];
-  for (const a of input) {
-    const sector = typeof a?.sector === 'string' ? a.sector : '';
-    const position = typeof a?.position === 'string' ? a.position : '';
-    const expires = Number(a?.expires);
-    if (!/^(LO|HI|UH)-\d{2}$/.test(sector) || !/^\d{2}$/.test(position) || !Number.isFinite(expires)) return null;
-    if (seen.has(sector) || expires <= now) continue;
-    seen.add(sector);
-    out.push({ sector, position, expires: Math.min(expires, now + MAX_TTL_MS) });
-  }
-  return out;
-}
-
-function readBody(req: IncomingMessage, limit = 16_384): Promise<unknown> {
+function readBody(req: IncomingMessage, limit = 131_072): Promise<unknown> {
   return new Promise((ok, fail) => {
     let size = 0;
     const chunks: Buffer[] = [];
@@ -145,17 +137,15 @@ async function serveStatic(url: URL, res: ServerResponse) {
 createServer(async (req, res) => {
   try {
     const url = new URL(req.url ?? '/', 'http://x');
-    if (url.pathname === '/api/overrides') {
+    if (url.pathname === '/api/plans') {
       if (req.method === 'OPTIONS') return send(res, 204, null);
-      if (req.method === 'GET') return send(res, 200, { ...(await load()), admin: isAdmin(req) });
+      if (req.method === 'GET') return send(res, 200, { plans: await load(), admin: isAdmin(req) });
       if (req.method === 'PUT') {
         if (!isAdmin(req)) return send(res, 401, { error: 'unauthorized' });
-        const body = (await readBody(req)) as { positions?: unknown; assign?: unknown } | null;
-        const positions = sanitize(body?.positions);
-        const assign = sanitizeAssign(body?.assign);
-        if (!positions || !assign) return send(res, 400, { error: 'invalid body' });
-        await save({ positions, assign });
-        return send(res, 200, { positions, assign, admin: true });
+        const plans = sanitize(((await readBody(req)) as { plans?: unknown } | null)?.plans);
+        if (!plans) return send(res, 400, { error: 'invalid body' });
+        await save(plans);
+        return send(res, 200, { plans, admin: true });
       }
       return send(res, 405, { error: 'method not allowed' });
     }

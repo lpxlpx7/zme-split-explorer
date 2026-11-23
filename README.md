@@ -36,10 +36,10 @@ The whole project is TypeScript: the app (`src/`) and the data build (`tools/`, 
   of those positions (list in the sheet, or click a sector on the map on a computer). The setup is kept in
   the browser's local storage and never sent anywhere. Link straight to it with `#preview`.
 
-## Self-hosting & manual positions (private editing)
+## Self-hosting & planned splits (admin)
 
 Everything runs on your own server. `server/index.ts` is a dependency-free Node server that serves the
-built site and the API (`/api/overrides`); manual positions are stored in `data/overrides.json`.
+built site and the API (`/api/plans`); plans are stored in `data/plans.json`.
 
 ```bash
 npm ci
@@ -51,13 +51,15 @@ Put nginx/Caddy with HTTPS in front (proxy everything to 127.0.0.1:8787) - the t
 so never serve it over plain HTTP. Env: `HOST`, `PORT`, `DATA_FILE`, `STATIC_DIR`, `ALLOWED_ORIGIN`
 (only needed if the site is served from a different origin than the API).
 
-Manual positions are for event days when a split is staffed but not on the VATSIM feed. Everyone sees
-the result; only the token holder can edit. Open the site with `#admin` appended, enter the token once; a
-lock button then appears in the header. Toggle positions on and choose how long they last (they expire on
-their own, max 48 h); a real login for the same position takes over automatically. The same sheet lets the
-admin reassign sectors ("who is covering what" right now) to any online position, live or manual; everyone
-sees it. An assignment only applies while its position is online and also expires. Without
-`VITE_OVERRIDES_URL` the feature is absent.
+**Planned splits** let the admin say ahead of time, for a time window, which positions are expected and who
+covers which sector. Open the site with `#admin` appended, enter the token once; a calendar button then
+appears in the header. Times are entered in UTC or your local zone (toggle; the other zone is shown next to
+it), up to 72 h per plan and 90 days ahead. While you edit, the map shows the draft.
+
+Live logins always decide: the map only ever shows positions that are really online. While a plan runs,
+its sector assignments apply to those of its positions that are online; planned positions that are not
+online are ignored and not shown. Finished plans are deleted automatically. Without `VITE_OVERRIDES_URL`
+the feature is absent.
 
 ## Airspace data
 

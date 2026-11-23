@@ -13,7 +13,7 @@ import {
 } from './neighbors';
 import { computeOwnership, type Ownership, type Piece } from './ownership';
 import { POSITIONS, SECTORS, SECTOR_BY_KEY, STRATA, STRATUM_INFO, sectorKey, type Stratum } from './sectors';
-import { fetchOverrides, manualEnabled, saveOverrides, token, type AssignOverride, type Override } from './manual';
+import { MAX_PLAN_HOURS, activePlan, fetchPlans, fmtTime, fromInput, plansEnabled, savePlans, toInput, token, type Plan, type Tz } from './plans';
 import { icons } from './ui/icons';
 import {
   esc,
@@ -23,13 +23,16 @@ import {
   renderControllers,
   renderNeighbors,
   renderAssignMenu,
-  renderManual,
+  renderLogin,
+  renderPlanEditor,
+  renderPlanList,
   renderPreview,
   renderSectors,
   renderStatus,
   zmeTooltip,
   type AircraftHit,
   type AssignOpts,
+  type Draft,
   type ViewModel,
 } from './ui/render';
 import { BottomSheet } from './ui/sheet';
@@ -72,13 +75,14 @@ const state = {
   error: null as string | null,
   lastFetch: 0,
   selectedPilot: null as string | null,
-  manual: [] as Override[],
-  manualAssign: [] as AssignOverride[],
+  plans: [] as Plan[],
   admin: false,
-  manualHours: 4,
-  manualBusy: false,
-  manualError: null as string | null,
-  sheet: 'preview' as 'preview' | 'manual',
+  /** Plan being created/edited in the admin sheet (shown on the map while the sheet is open). */
+  draft: null as Draft | null,
+  tz: (store.get('asx.tz') === 'local' ? 'local' : 'utc') as Tz,
+  busy: false,
+  adminError: null as string | null,
+  sheet: 'preview' as 'preview' | 'plans',
 };
 if (!STRATA.includes(state.stratum)) state.stratum = 'HI';
 
@@ -167,7 +171,7 @@ async function init() {
 /** Icons, and the two bottom sheets on phones. */
 function setupChrome() {
   $('#preview-btn').innerHTML = icons.sliders;
-  $('#manual-btn').innerHTML = icons.lock;
+  $('#plans-btn').innerHTML = icons.calendar;
   $('#recenter-btn').innerHTML = icons.location;
   $('#neighbors-btn').innerHTML = icons.layers;
   $('.search-icon').innerHTML = icons.search;
@@ -214,46 +218,53 @@ async function poll() {
   } catch (e) {
     state.error = e instanceof Error ? e.message : String(e);
   }
-  await refreshManual();
+  await refreshPlans();
   recompute();
   setTimeout(poll, document.hidden ? POLL_MS * 4 : POLL_MS);
 }
 
-/** Manual positions are public to read; the token only proves who may edit. Failures keep the last list. */
-async function refreshManual() {
-  if (!manualEnabled || state.manualBusy) return;
+/** Plans are public to read; the token only proves who may edit. Failures keep the last list. */
+async function refreshPlans() {
+  if (!plansEnabled || state.busy) return;
   try {
-    const r = await fetchOverrides();
-    state.manual = r.positions;
-    state.manualAssign = r.assign;
+    const r = await fetchPlans();
+    state.plans = r.plans;
     state.admin = r.admin;
   } catch { /* backend unreachable — keep what we had */ }
-  $('#manual-btn').hidden = !state.admin;
+  $('#plans-btn').hidden = !state.admin;
 }
 
-function manualControllers(): OnlineController[] {
-  const live = new Set(state.live.map((c) => c.position));
-  return state.manual
-    .filter((o) => o.expires > Date.now() && !live.has(o.position) && POSITIONS.has(o.position))
-    .map((o) => {
-      const p = POSITIONS.get(o.position)!;
-      return { position: o.position, callsign: p.callsign, frequency: p.freq, name: 'Manual', cid: 0, rating: '', logon: new Date(), manual: true, until: new Date(o.expires) };
-    });
-}
+const sheetOpen = () => document.documentElement.dataset.preview === 'open';
+/** The admin is editing a plan: the map shows that draft instead of live data. */
+const editingDraft = () => !!state.draft && state.sheet === 'plans' && sheetOpen();
 
-function controllers(): OnlineController[] {
-  if (!state.preview) return [...state.live, ...manualControllers()].sort((a, b) => a.position.localeCompare(b.position));
-  return [...state.previewSet].sort().map((id) => {
+const fake = (ids: Iterable<string>, name: string): OnlineController[] =>
+  [...ids].sort().map((id) => {
     const p = POSITIONS.get(id)!;
-    return { position: id, callsign: p.callsign, frequency: p.freq, name: 'Preview', cid: 0, rating: '', logon: new Date(), preview: true };
+    return { position: id, callsign: p.callsign, frequency: p.freq, name, cid: 0, rating: '', logon: new Date(), preview: true };
   });
+
+/** Live logins always decide who is online; a plan can only re-assign sectors among them. */
+function controllers(): OnlineController[] {
+  if (editingDraft()) return fake(state.draft!.positions, 'Plan draft');
+  if (state.preview) return fake(state.previewSet, 'Preview');
+  return state.live;
 }
 
 /** Sector → position assignments in force for the current mode. */
 function assignMap(): Map<string, string> {
+  if (editingDraft()) return state.draft!.assign;
   if (state.preview) return state.previewAssign;
-  const now = Date.now();
-  return new Map(state.manualAssign.filter((a) => a.expires > now).map((a) => [a.sector, a.position]));
+  return new Map(activePlan(state.plans)?.assign ?? []);
+}
+
+/** Live mode: the running plan and how many of its assignments have their position online. */
+function planStatus(): ViewModel['plan'] {
+  if (editingDraft() || state.preview) return null;
+  const plan = activePlan(state.plans);
+  if (!plan) return null;
+  const online = new Set(state.live.map((c) => c.position));
+  return { plan, applied: plan.assign.filter(([, pos]) => online.has(pos)).length };
 }
 
 function savePreview() {
@@ -273,6 +284,7 @@ function viewModel(): ViewModel {
     neighborPieces,
     neighborCtrls: state.neighborCtrls,
     neighborOwners: state.neighborOwners,
+    plan: planStatus(),
   };
 }
 
@@ -298,7 +310,9 @@ function recompute() {
 
   const vm = viewModel();
   $('#status').innerHTML = renderStatus(vm);
-  $('#preview-banner').hidden = !state.preview;
+  const draft = editingDraft();
+  $('#preview-banner').hidden = !state.preview && !draft;
+  $('#preview-banner-text').textContent = draft ? 'Plan draft · not live' : 'Preview mode · not live';
   renderBody(vm);
   renderAircraft();
   renderClock();
@@ -363,22 +377,17 @@ function ownerLabels(ctrls: OnlineController[]): GeoJSON.FeatureCollection {
 // ─── sector assignment editing ───────────────────────────────────────────────
 interface Editor { online: string[]; assign: Map<string, string>; set(key: string, pos: string | null): void }
 
-/** The assignment editor that is open right now, if any (preview sheet, or manual sheet when signed in). */
+/** The assignment editor that is open right now, if any (preview sheet, or a plan draft). */
 function editor(): Editor | null {
-  if (document.documentElement.dataset.preview !== 'open') return null;
+  if (!sheetOpen()) return null;
   if (state.sheet === 'preview' && state.preview)
     return { online: [...state.previewSet].sort(), assign: state.previewAssign, set: setPreviewAssign };
-  if (state.sheet === 'manual' && state.admin && !state.preview)
-    return { online: manualOnline(), assign: assignMap(), set: setManualAssign };
+  if (editingDraft()) return { online: [...state.draft!.positions].sort(), assign: state.draft!.assign, set: setDraftAssign };
   return null;
 }
 
-function manualOnline() {
-  return [...new Set([...state.live, ...manualControllers()].map((c) => c.position))].sort();
-}
-
 function assignOpts(online: string[], assign: Map<string, string>, attr: AssignOpts['attr']): AssignOpts {
-  return { stratum: state.stratum, online, assign, ownership: state.ownership!, colors, attr, busy: state.manualBusy };
+  return { stratum: state.stratum, online, assign, ownership: state.ownership!, colors, attr, busy: state.busy };
 }
 
 function setPreviewAssign(key: string, pos: string | null) {
@@ -389,9 +398,12 @@ function setPreviewAssign(key: string, pos: string | null) {
   rerenderSheet();
 }
 
-function setManualAssign(key: string, pos: string | null) {
-  const rest = state.manualAssign.filter((a) => a.sector !== key && a.expires > Date.now());
-  void commitManual(state.manual, pos ? [...rest, { sector: key, position: pos, expires: Date.now() + state.manualHours * 3_600_000 }] : rest);
+function setDraftAssign(key: string, pos: string | null) {
+  if (!state.draft) return;
+  if (pos) state.draft.assign.set(key, pos);
+  else state.draft.assign.delete(key);
+  recompute();
+  rerenderSheet();
 }
 
 /** Drop preview assignments whose position was switched off. */
@@ -422,12 +434,12 @@ function closeMenu() {
   $('#assign-menu').hidden = true;
 }
 
-/** Re-render the open sheet without losing its scroll position. */
-function rerenderSheet() {
+/** Re-render the open sheet without losing its scroll position (or back to the top on a new view). */
+function rerenderSheet(toTop = false) {
   const sc = $('#preview-scroll');
   const top = sc.scrollTop;
   renderPreviewSheet();
-  sc.scrollTop = top;
+  sc.scrollTop = toTop ? 0 : top;
 }
 
 // ─── airspace lookup ─────────────────────────────────────────────────────────
@@ -506,6 +518,7 @@ function renderBody(vm = viewModel()) {
 
 function renderClock() {
   const pill = $('#live');
+  if (editingDraft()) { pill.className = 'live preview'; pill.textContent = 'Plan draft'; return; }
   if (state.preview) { pill.className = 'live preview'; pill.textContent = 'Preview'; return; }
   if (state.error) { pill.className = 'live error'; pill.textContent = 'Feed error'; pill.title = state.error; return; }
   if (!state.lastFetch) { pill.className = 'live'; pill.textContent = 'Connecting…'; return; }
@@ -572,7 +585,7 @@ function bindUI() {
   document.addEventListener('click', (e) => {
     const a = (e.target as HTMLElement).closest<HTMLElement>('[data-action]')?.dataset.action;
     if (a === 'open-preview') openSheet('preview');
-    if (a === 'open-manual') openSheet('manual');
+    if (a === 'open-plans') openSheet('plans');
     if (a === 'close-preview') togglePreview(false);
     if (a === 'close-aircraft') { state.selectedPilot = null; recompute(); }
     if (a === 'recenter') view.map.fitBounds(zmeBounds, { padding: padding() });
@@ -623,7 +636,7 @@ function bindUI() {
   view.map.on('mouseleave', 'aircraft', () => (view.map.getCanvas().style.cursor = ''));
 
   renderPreviewSheet();
-  bindManual();
+  bindPlans();
   const sheet = $('#preview-sheet');
   sheet.addEventListener('change', (e) => {
     const t = e.target as HTMLInputElement;
@@ -679,99 +692,194 @@ function selectPilot(p: VatsimPilot, fly = true) {
 }
 
 function renderPreviewSheet() {
-  if (state.sheet === 'manual') return renderManualSheet();
+  if (state.sheet === 'plans') return renderPlansSheet();
   $('#sheet-title').textContent = 'Preview';
   $('#sheet-sub').textContent = 'Switch positions on to see who would own each sector.';
   $('#preview-scroll').innerHTML = renderPreview(state.preview, state.previewSet, assignOpts([...state.previewSet].sort(), state.previewAssign, 'assign'));
 }
 
-function renderManualSheet() {
-  $('#sheet-title').textContent = 'Manual positions';
-  $('#sheet-sub').textContent = 'Visible to everyone · only you can edit';
-  $('#preview-scroll').innerHTML = renderManual({
-    signedIn: state.admin, manual: state.manual, assign: state.manualAssign,
-    assignOpts: assignOpts(manualOnline(), assignMap(), 'manual-assign'),
-    hours: state.manualHours, busy: state.manualBusy, error: state.manualError,
-  });
+function renderPlansSheet() {
+  $('#sheet-title').textContent = state.draft ? (state.draft.isNew ? 'New plan' : 'Edit plan') : 'Planned splits';
+  $('#sheet-sub').textContent = state.draft ? 'The map shows this draft while you edit.' : 'Visible to everyone · only you can edit';
+  const sc = $('#preview-scroll');
+  if (!state.admin) sc.innerHTML = renderLogin(state.busy, state.adminError);
+  else if (state.draft)
+    sc.innerHTML = renderPlanEditor({
+      draft: state.draft, tz: state.tz, busy: state.busy, error: state.adminError,
+      assign: assignOpts([...state.draft.positions].sort(), state.draft.assign, 'plan-assign'),
+    });
+  else sc.innerHTML = renderPlanList({ plans: state.plans, tz: state.tz, busy: state.busy, error: state.adminError, now: Date.now() });
 }
 
-function openSheet(mode: 'preview' | 'manual') {
+function openSheet(mode: 'preview' | 'plans') {
   state.sheet = mode;
-  // The manual sheet edits the live picture, so leave preview mode for it.
-  if (mode === 'manual' && state.preview) { state.preview = false; recompute(); }
-  state.manualError = null;
+  // Plans are edited on their own draft, not on top of a local preview.
+  if (mode === 'plans' && state.preview) state.preview = false;
+  state.adminError = null;
   renderPreviewSheet();
   togglePreview(true);
 }
 
-async function commitManual(next: Override[], assign: AssignOverride[]) {
-  state.manualBusy = true;
-  state.manualError = null;
+async function commitPlans(next: Plan[]): Promise<boolean> {
+  state.busy = true;
+  state.adminError = null;
   rerenderSheet();
+  let ok = false;
   try {
-    const r = await saveOverrides(token.get(), next, assign);
-    state.manual = r.positions;
-    state.manualAssign = r.assign;
+    state.plans = (await savePlans(token.get(), next)).plans;
+    ok = true;
   } catch (e) {
-    state.manualError = e instanceof Error ? e.message : String(e);
+    state.adminError = e instanceof Error ? e.message : String(e);
   }
-  state.manualBusy = false;
-  recompute();
-  rerenderSheet();
+  state.busy = false;
+  return ok;
 }
 
 async function signIn(value: string) {
-  state.manualBusy = true;
-  state.manualError = null;
-  renderManualSheet();
+  state.busy = true;
+  state.adminError = null;
+  renderPlansSheet();
   try {
-    const r = await fetchOverrides(value);
+    const r = await fetchPlans(value);
     if (!r.admin) throw new Error('Wrong token');
     token.set(value);
     state.admin = true;
-    state.manual = r.positions;
-    state.manualAssign = r.assign;
-    $('#manual-btn').hidden = false;
+    state.plans = r.plans;
+    $('#plans-btn').hidden = false;
   } catch (e) {
-    state.manualError = e instanceof Error ? e.message : String(e);
+    state.adminError = e instanceof Error ? e.message : String(e);
   }
-  state.manualBusy = false;
-  renderManualSheet();
+  state.busy = false;
+  renderPlansSheet();
   recompute();
 }
 
-function bindManual() {
+const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+
+function startDraft(plan?: Plan) {
+  const hour = 3_600_000;
+  const start = plan?.start ?? Math.ceil(Date.now() / hour) * hour;
+  state.draft = {
+    id: plan?.id ?? newId(),
+    start,
+    end: plan?.end ?? start + 3 * hour,
+    positions: new Set(plan?.positions ?? []),
+    assign: new Map(plan?.assign ?? []),
+    isNew: !plan,
+  };
+  state.adminError = null;
+  recompute();
+  rerenderSheet(true);
+}
+
+function endDraft() {
+  state.draft = null;
+  state.adminError = null;
+  recompute();
+  rerenderSheet(true);
+}
+
+async function saveDraft() {
+  const d = state.draft;
+  if (!d) return;
+  const err =
+    !Number.isFinite(d.start) || !Number.isFinite(d.end) ? 'Enter a start and an end time.'
+    : d.end <= d.start ? 'The end must be after the start.'
+    : d.end <= Date.now() ? 'This window is already over.'
+    : d.end - d.start > MAX_PLAN_HOURS * 3_600_000 ? `A plan can last at most ${MAX_PLAN_HOURS} hours.`
+    : !d.positions.size ? 'Pick at least one expected position.'
+    : null;
+  if (err) {
+    state.adminError = err;
+    rerenderSheet();
+    return;
+  }
+  const plan: Plan = {
+    id: d.id, start: d.start, end: d.end,
+    positions: [...d.positions].sort(),
+    assign: [...d.assign].filter(([, pos]) => d.positions.has(pos)),
+  };
+  if (await commitPlans([...state.plans.filter((p) => p.id !== d.id), plan])) endDraft();
+  else rerenderSheet();
+}
+
+function bindPlans() {
   const sheet = $('#preview-sheet');
   sheet.addEventListener('submit', (e) => {
-    if ((e.target as HTMLElement).id !== 'manual-login') return;
+    if ((e.target as HTMLElement).id !== 'plan-login') return;
     e.preventDefault();
-    const v = $<HTMLInputElement>('#manual-token').value.trim();
+    const v = $<HTMLInputElement>('#plan-token').value.trim();
     if (v) void signIn(v);
   });
   sheet.addEventListener('change', (e) => {
     const t = e.target as HTMLInputElement;
-    if (t.id === 'manual-hours') state.manualHours = Number(t.value);
-    if (t.dataset.manualAssign) return setManualAssign(t.dataset.manualAssign, t.value || null);
-    const pos = t.dataset.manualPos;
-    if (!pos) return;
-    const rest = state.manual.filter((o) => o.position !== pos);
-    void commitManual(t.checked ? [...rest, { position: pos, expires: Date.now() + state.manualHours * 3_600_000 }] : rest, state.manualAssign);
+    const d = state.draft;
+    if (!d || state.sheet !== 'plans') return;
+    if (t.id === 'plan-start' || t.id === 'plan-end') {
+      const ms = fromInput(t.value, state.tz);
+      if (t.id === 'plan-start') {
+        // Moving the start keeps the duration.
+        const len = d.end - d.start;
+        d.start = ms;
+        if (Number.isFinite(ms) && Number.isFinite(len) && len > 0) d.end = ms + len;
+        const end = $<HTMLInputElement>('#plan-end');
+        if (Number.isFinite(d.end)) end.value = toInputFor(d.end);
+      } else d.end = ms;
+      // Update the "other zone" hints in place: re-rendering would steal focus from the picker.
+      for (const [id, v] of [['plan-start', d.start], ['plan-end', d.end]] as const)
+        $(`#${id}-other`).textContent = Number.isFinite(v) ? fmtTime(v, state.tz === 'utc' ? 'local' : 'utc') : '';
+      return;
+    }
+    if (t.dataset.planAssign) return setDraftAssign(t.dataset.planAssign, t.value || null);
+    if (t.dataset.planPos) {
+      if (t.checked) d.positions.add(t.dataset.planPos);
+      else d.positions.delete(t.dataset.planPos);
+      for (const [k, v] of d.assign) if (!d.positions.has(v)) d.assign.delete(k);
+      recompute();
+      rerenderSheet();
+    }
   });
   sheet.addEventListener('click', (e) => {
     const t = e.target as HTMLElement;
-    if (t.closest('[data-manual-clear]')) void commitManual([], []);
-    if (t.closest('[data-manual-assign-reset]')) void commitManual(state.manual, []);
-    if (t.closest('[data-manual-signout]')) {
+    const el = <K extends string>(attr: K) => t.closest<HTMLElement>(`[data-${attr}]`);
+    const tz = el('tz')?.dataset.tz as Tz | undefined;
+    if (tz && state.sheet === 'plans' && tz !== state.tz) {
+      state.tz = tz;
+      store.set('asx.tz', tz);
+      rerenderSheet();
+    }
+    if (el('plan-new')) startDraft();
+    const edit = el('plan-edit')?.dataset.planEdit;
+    if (edit) startDraft(state.plans.find((p) => p.id === edit));
+    const del = el('plan-delete')?.dataset.planDelete;
+    if (del && confirm('Delete this plan?')) void commitPlans(state.plans.filter((p) => p.id !== del)).then(() => { recompute(); rerenderSheet(); });
+    if (el('plan-cancel')) endDraft();
+    if (el('plan-save')) void saveDraft();
+    const preset = el('plan-preset')?.dataset.planPreset;
+    if (preset && state.draft) {
+      state.draft.positions = new Set(preset.split(','));
+      for (const [k, v] of state.draft.assign) if (!state.draft.positions.has(v)) state.draft.assign.delete(k);
+      recompute();
+      rerenderSheet();
+    }
+    if (el('plan-assign-reset') && state.draft) {
+      state.draft.assign.clear();
+      recompute();
+      rerenderSheet();
+    }
+    if (el('plan-signout')) {
       token.set('');
       state.admin = false;
-      $('#manual-btn').hidden = true;
-      renderManualSheet();
+      state.draft = null;
+      $('#plans-btn').hidden = true;
+      recompute();
+      rerenderSheet();
     }
   });
   // Hidden entry point: open the site with #admin to get the sign-in form.
-  if (manualEnabled && location.hash === '#admin') {
+  if (plansEnabled && location.hash === '#admin') {
     history.replaceState(null, '', location.pathname + location.search);
-    openSheet('manual');
+    openSheet('plans');
   }
   // Shareable entry point for the local preview editor.
   const openPreviewFromHash = () => {
@@ -784,6 +892,8 @@ function bindManual() {
   openPreviewFromHash();
 }
 
+const toInputFor = (ms: number) => toInput(ms, state.tz);
+
 function togglePreview(open: boolean) {
   if (previewSheet.isMobile) previewSheet.setDetent(open ? 1 : 0);
   else $('#preview-sheet').classList.toggle('open', open);
@@ -792,6 +902,8 @@ function togglePreview(open: boolean) {
     closeMenu();
     if (location.hash === '#preview') history.replaceState(null, '', location.pathname + location.search);
   }
+  // A plan draft is only drawn while its sheet is open.
+  if (state.draft) recompute();
   renderEditHint();
 }
 

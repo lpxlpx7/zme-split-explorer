@@ -3,7 +3,7 @@ import type { ColorBook } from '../colors';
 import type { NeighborController, NeighborFacility, NeighborOwner, NeighborPiece } from '../neighbors';
 import type { Ownership, Piece } from '../ownership';
 import { POSITIONS, SECTORS, SECTOR_BY_KEY, STRATA, STRATUM_INFO, sectorKey, type Sector, type Stratum } from '../sectors';
-import type { AssignOverride, Override } from '../manual';
+import { fmtRange, fmtTime, localZoneName, toInput, type Plan, type Tz } from '../plans';
 import type { OnlineController, VatsimPilot } from '../vatsim';
 import { icons } from './icons';
 
@@ -19,6 +19,8 @@ export interface ViewModel {
   neighborPieces: NeighborPiece[];
   neighborCtrls: NeighborController[];
   neighborOwners: Map<string, NeighborOwner>;
+  /** Live mode: the plan in force and how many of its assignments apply (their position is online). */
+  plan: { plan: Plan; applied: number } | null;
 }
 
 export const esc = (s: unknown) =>
@@ -37,10 +39,6 @@ const duration = (logon: Date) => {
   return mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins}m`;
 };
 
-export const remaining = (until: Date) => {
-  const mins = Math.max(0, Math.round((until.getTime() - Date.now()) / 60000));
-  return `${mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins}m`} left`;
-};
 
 // ─── Status ──────────────────────────────────────────────────────────────────
 export function renderStatus(vm: ViewModel) {
@@ -61,8 +59,11 @@ export function renderStatus(vm: ViewModel) {
     title = 'Stratified split';
     sub = STRATA.map((s) => `${s} ${count(s)}-way`).join(' · ');
   }
+  const plan = vm.plan?.applied
+    ? `<div class="status-plan">${icons.calendar}Planned split · until ${esc(fmtTime(vm.plan.plan.end, 'utc', false))}</div>`
+    : '';
   return `<div class="status-icon ${o.mode}">${o.mode === 'offline' ? icons.moon : icons.radar}</div>
-    <div class="status-text"><div class="status-title">${esc(title)}</div><div class="status-sub">${esc(sub)}</div></div>`;
+    <div class="status-text"><div class="status-title">${esc(title)}</div><div class="status-sub">${esc(sub)}</div>${plan}</div>`;
 }
 
 // ─── Controllers tab ─────────────────────────────────────────────────────────
@@ -85,8 +86,8 @@ export function renderControllers(vm: ViewModel) {
       return `<article class="ctrl" style="--c:${vm.colors.get(c.position)}">
         <div class="ctrl-head">
           <span class="ctrl-badge">${c.position}</span>
-          <div class="ctrl-id"><div class="ctrl-callsign">${esc(c.callsign)}</div><div class="ctrl-name">${esc(pos?.name ?? '')} · ${esc(c.preview ? 'Preview' : c.manual ? 'Staffed manually' : c.name)}${c.rating ? ` · ${esc(c.rating)}` : ''}</div></div>
-          <div class="ctrl-freq"><div>${esc(c.frequency)}</div><small>${c.preview ? 'Preview' : c.manual ? `Manual${c.until ? ` · ${remaining(c.until)}` : ''}` : duration(c.logon)}</small></div>
+          <div class="ctrl-id"><div class="ctrl-callsign">${esc(c.callsign)}</div><div class="ctrl-name">${esc(pos?.name ?? '')} · ${esc(c.name)}${c.rating ? ` · ${esc(c.rating)}` : ''}</div></div>
+          <div class="ctrl-freq"><div>${esc(c.frequency)}</div><small>${c.preview ? esc(c.name) : duration(c.logon)}</small></div>
         </div>
         ${byStratum || '<div class="muted small" style="padding-top:6px">No airspace</div>'}
       </article>`;
@@ -200,7 +201,7 @@ export const PRESETS: [string, string][] = [
   ['Clear', ''],
 ];
 
-// ─── Sector assignments (preview + manual) ───────────────────────────────────
+// ─── Sector assignments (preview + plan editor) ───────────────────────────────────
 export interface AssignOpts {
   stratum: Stratum;
   /** Positions that can be picked (online in this mode). */
@@ -209,8 +210,8 @@ export interface AssignOpts {
   /** Current owner of each sector key (after assignments). */
   ownership: Ownership;
   colors: ColorBook;
-  /** Attribute that marks the <select>s: data-assign (preview) or data-manual-assign. */
-  attr: 'assign' | 'manual-assign';
+  /** Attribute that marks the <select>s: data-assign (preview) or data-plan-assign. */
+  attr: 'assign' | 'plan-assign';
   busy?: boolean;
 }
 
@@ -236,7 +237,7 @@ export function renderAssign(o: AssignOpts) {
     .join('');
   const n = [...o.assign.keys()].length;
   return `<section class="group"><h3>Sector assignments · ${STRATUM_INFO[o.stratum].label}${n ? `<span class="count">${n} manual</span>` : ''}</h3>
-    <p class="muted small" style="margin:0 4px 8px">Hand a sector to any online position. Switch the stratum at the top of the map; on a computer you can also click a sector on the map.</p>
+    <p class="muted small" style="margin:0 4px 8px">Hand a sector to any ${o.attr === 'plan-assign' ? 'expected' : 'online'} position. Switch the stratum at the top of the map; on a computer you can also click a sector on the map.</p>
     <div class="inset">${rows}</div>
     ${n ? `<div class="presets"><button class="btn" data-${o.attr}-reset ${o.busy ? 'disabled' : ''}>Reset all to SOP</button></div>` : ''}</section>`;
 }
@@ -268,30 +269,66 @@ export function renderPreview(preview: boolean, selected: Set<string>, assign: A
     <div style="height:calc(24px + var(--safe-bottom))"></div>`;
 }
 
-// ─── Manual sheet (authorised users only) ────────────────────────────────────
-export const MANUAL_HOURS = [2, 4, 8, 24];
+// ─── Planned splits (admin only) ─────────────────────────────────────────────
+export function renderLogin(busy: boolean, error: string | null) {
+  return `<form id="plan-login" class="manual-login" autocomplete="off">
+      <input type="password" id="plan-token" placeholder="Access token" aria-label="Access token" autocomplete="off" spellcheck="false" />
+      <button class="btn tinted" type="submit" ${busy ? 'disabled' : ''}>Sign in</button>
+      ${error ? `<p class="form-error">${esc(error)}</p>` : ''}</form>`;
+}
 
-export function renderManual(opts: { signedIn: boolean; manual: Override[]; assign: AssignOverride[]; assignOpts: AssignOpts; hours: number; busy: boolean; error: string | null }) {
+const tzSwitch = (tz: Tz) => `<div class="segmented small tz" style="--i:${tz === 'utc' ? 0 : 1}" role="tablist" aria-label="Time zone">
+    <span class="thumb"></span>
+    <button role="tab" data-tz="utc" aria-selected="${tz === 'utc'}">UTC</button>
+    <button role="tab" data-tz="local" aria-selected="${tz === 'local'}">Local · ${esc(localZoneName())}</button>
+  </div>`;
+
+const other = (tz: Tz): Tz => (tz === 'utc' ? 'local' : 'utc');
+
+export function renderPlanList(opts: { plans: Plan[]; tz: Tz; busy: boolean; error: string | null; now: number }) {
   const err = opts.error ? `<p class="form-error">${esc(opts.error)}</p>` : '';
-  if (!opts.signedIn)
-    return `<form id="manual-login" class="manual-login" autocomplete="off">
-      <input type="password" id="manual-token" placeholder="Access token" aria-label="Access token" autocomplete="off" spellcheck="false" />
-      <button class="btn tinted" type="submit" ${opts.busy ? 'disabled' : ''}>Sign in</button>
-      ${err}</form>`;
-  const on = new Map(opts.manual.map((o) => [o.position, o]));
+  const cards = [...opts.plans]
+    .sort((a, b) => a.start - b.start)
+    .map((p) => {
+      const active = p.start <= opts.now && opts.now < p.end;
+      const chips = p.positions.map((id) => `<span class="chip"><b>${id}</b>${esc(POSITIONS.get(id)?.name ?? '')}</span>`).join('');
+      return `<article class="plan${active ? ' active' : ''}">
+        <div class="plan-time"><div>${esc(fmtRange(p.start, p.end, opts.tz))}${active ? '<span class="tag on">Now</span>' : ''}</div>
+          <small class="muted">${esc(fmtRange(p.start, p.end, other(opts.tz)))}</small></div>
+        <div class="chips">${chips || '<span class="muted small">No positions</span>'}</div>
+        <div class="plan-foot"><small class="muted">${p.assign.length ? `${p.assign.length} sector assignment${p.assign.length > 1 ? 's' : ''}` : 'SOP split'}</small>
+          <span><button class="btn" data-plan-edit="${p.id}" ${opts.busy ? 'disabled' : ''}>Edit</button> <button class="btn danger" data-plan-delete="${p.id}" ${opts.busy ? 'disabled' : ''}>Delete</button></span></div>
+      </article>`;
+    })
+    .join('');
   return `${err}
-    <p class="muted small" style="margin:4px 4px 0">For positions that are staffed but not on the VATSIM feed (event stand-by splits). They show for everyone until they expire; a real login for the same position takes over.</p>
-    <label class="switch-row card-row" style="margin-top:12px"><span>Expires after</span>
-      <select id="manual-hours">${MANUAL_HOURS.map((h) => `<option value="${h}" ${h === opts.hours ? 'selected' : ''}>${h} hours</option>`).join('')}</select></label>
-    <div class="presets"><button class="btn" data-manual-clear ${(on.size || opts.assign.length) && !opts.busy ? '' : 'disabled'}>Clear all</button><button class="btn" data-manual-signout>Sign out</button></div>
-    ${renderAssign(opts.assignOpts)}
-    ${STRATA.map((s) => `<section class="group"><h3>${STRATUM_INFO[s].label} · ${STRATUM_INFO[s].altitude}</h3><div class="inset">${[...POSITIONS.values()]
-      .filter((p) => p.stratum === s)
-      .sort((a, b) => a.id.localeCompare(b.id))
-      .map((p) => {
-        const o = on.get(p.id);
-        return `<label class="row switch-row"><span class="row-num">${p.id}</span><div class="row-main"><div>${esc(p.name)}</div><small>${p.callsign} · ${p.freq}${o ? ` · ${remaining(new Date(o.expires))}` : ''}</small></div><input type="checkbox" class="switch" data-manual-pos="${p.id}" ${o ? 'checked' : ''} ${opts.busy ? 'disabled' : ''}></label>`;
-      })
-      .join('')}</div></section>`).join('')}
+    <p class="muted small" style="margin:4px 4px 0">Say ahead of time which positions are expected and who covers which sector. Live logins always decide: while a plan runs it only applies to positions that are actually online; the rest is ignored.</p>
+    ${tzSwitch(opts.tz)}
+    <div class="presets"><button class="btn tinted" data-plan-new ${opts.busy ? 'disabled' : ''}>New plan</button><button class="btn" data-plan-signout>Sign out</button></div>
+    <div class="list">${cards || '<div class="empty-state"><p>No planned splits.</p></div>'}</div>
+    <div style="height:calc(24px + var(--safe-bottom))"></div>`;
+}
+
+export interface Draft { id: string; start: number; end: number; positions: Set<string>; assign: Map<string, string>; isNew: boolean }
+
+export function renderPlanEditor(opts: { draft: Draft; tz: Tz; busy: boolean; error: string | null; assign: AssignOpts }) {
+  const d = opts.draft;
+  const err = opts.error ? `<p class="form-error">${esc(opts.error)}</p>` : '';
+  const field = (id: string, label: string, ms: number) => `<label class="time-row card-row"><span>${label}</span>
+      <input type="datetime-local" id="${id}" value="${Number.isFinite(ms) ? toInput(ms, opts.tz) : ''}">
+      <small class="muted" id="${id}-other">${Number.isFinite(ms) ? esc(fmtTime(ms, other(opts.tz))) : ''}</small></label>`;
+  const posGroups = STRATA.map((s) => `<section class="group"><h3>${STRATUM_INFO[s].label}</h3><div class="pos-grid">${[...POSITIONS.values()]
+    .filter((p) => p.stratum === s)
+    .sort((a, b) => a.id.localeCompare(b.id))
+    .map((p) => `<label class="pos-chip"><input type="checkbox" data-plan-pos="${p.id}" ${d.positions.has(p.id) ? 'checked' : ''}><b>${p.id}</b> ${esc(p.name)}</label>`)
+    .join('')}</div></section>`).join('');
+  return `${err}
+    ${tzSwitch(opts.tz)}
+    <div class="time-fields">${field('plan-start', 'Start', d.start)}${field('plan-end', 'End', d.end)}</div>
+    <section class="group"><h3>Expected positions</h3>
+      <div class="presets" style="margin-top:0">${PRESETS.filter(([, v]) => v).map(([l, v]) => `<button class="btn" data-plan-preset="${v}">${l}</button>`).join('')}</div></section>
+    ${posGroups}
+    ${d.positions.size ? renderAssign(opts.assign) : ''}
+    <div class="presets sticky-actions"><button class="btn tinted" data-plan-save ${opts.busy ? 'disabled' : ''}>Save plan</button><button class="btn" data-plan-cancel>Cancel</button></div>
     <div style="height:calc(24px + var(--safe-bottom))"></div>`;
 }

@@ -14,5 +14,6 @@ export const icons = {
   globe: svg('<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>', 18),
   plane: `<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M12 1.5c.9 0 1.5 1.1 1.5 2.4v5.3l8 4.6v2.1l-8-2.4v4.7l2.4 1.8v1.7L12 20.6l-3.9 1.1V20l2.4-1.8v-4.7l-8 2.4v-2.1l8-4.6V3.9c0-1.3.6-2.4 1.5-2.4z"/></svg>`,
   lock: svg('<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>', 17),
+  calendar: svg('<rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M9 3v4M15 3v4"/>', 17),
   chevron: svg('<path d="M9 6l6 6-6 6"/>', 14),
 };
