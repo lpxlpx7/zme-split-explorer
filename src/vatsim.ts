@@ -92,10 +92,3 @@ export function zmeControllers(data: VatsimData): OnlineController[] {
   }
   return out.sort((a, b) => a.position.localeCompare(b.position));
 }
-
-export function neighborOnline(data: VatsimData, prefixes: string[]): VatsimController[] {
-  return data.controllers.filter(
-    (c) => c.facility === 6 && c.frequency !== '199.998' &&
-      prefixes.some((p) => c.callsign.toUpperCase().startsWith(`${p}_`) && c.callsign.toUpperCase().endsWith('_CTR')),
-  );
-}

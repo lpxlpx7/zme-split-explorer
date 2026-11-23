@@ -151,13 +151,3 @@ export const COMBINED_SPLITS: Record<Region, string>[] = [
 ];
 export const COMBINED_PRIMARY = '22';
 export const COMBINED_POSITIONS = new Set(['22', '63', '46', '44']);
-
-/** Neighbouring facilities shown in the status list. */
-export const NEIGHBORS = [
-  { id: 'ZKC', name: 'Kansas City', prefixes: ['KC'] },
-  { id: 'ZID', name: 'Indianapolis', prefixes: ['IND'] },
-  { id: 'ZTL', name: 'Atlanta', prefixes: ['ATL'] },
-  { id: 'ZJX', name: 'Jacksonville', prefixes: ['JAX'] },
-  { id: 'ZHU', name: 'Houston', prefixes: ['HOU'] },
-  { id: 'ZFW', name: 'Fort Worth', prefixes: ['FTW'] },
-];
