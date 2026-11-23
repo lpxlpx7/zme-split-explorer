@@ -9,10 +9,12 @@
     "preview": "vite preview",
     "data": "tsx tools/build-data.ts",
     "serve": "tsx server/index.ts",
+    "build:server": "esbuild server/index.ts --bundle --platform=node --format=esm --outfile=server/server.mjs",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.node.json"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",
+    "esbuild": "^0.28.2",
     "jsts": "^2.12.1",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",

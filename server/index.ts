@@ -16,6 +16,10 @@ import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
 
 interface Override { position: string; expires: number }
 
+// Paths are relative to the project root (not the cwd), so any process manager can start this.
+const ROOT = resolve(import.meta.dirname, '..');
+try { process.loadEnvFile(join(ROOT, '.env')); } catch { /* no .env — use the real environment */ }
+
 const TOKEN = process.env.ADMIN_TOKEN ?? '';
 if (TOKEN.length < 16) {
   console.error('Set ADMIN_TOKEN to a random string of at least 16 characters.');
@@ -23,8 +27,8 @@ if (TOKEN.length < 16) {
 }
 const PORT = Number(process.env.PORT ?? 8787);
 const HOST = process.env.HOST ?? '127.0.0.1';
-const DATA_FILE = resolve(process.env.DATA_FILE ?? 'data/overrides.json');
-const STATIC_DIR = resolve(process.env.STATIC_DIR ?? 'dist');
+const DATA_FILE = resolve(ROOT, process.env.DATA_FILE ?? 'data/overrides.json');
+const STATIC_DIR = resolve(ROOT, process.env.STATIC_DIR ?? 'dist');
 const ORIGIN = process.env.ALLOWED_ORIGIN;
 const MAX_TTL_MS = 48 * 3_600_000;
 const MAX_ENTRIES = 40;
