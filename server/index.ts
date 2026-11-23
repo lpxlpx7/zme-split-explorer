@@ -3,9 +3,11 @@
  *
  *   GET  /api/plans   public  → { plans, live, admin }   (admin = the Bearer token is valid)
  *   PUT  /api/plans   Bearer  → replace both             (only ADMIN_TOKEN may write)
+ *   GET  /api/plans/history          Bearer → { plans }   finished events, newest first
+ *   DELETE /api/plans/history?id=…   Bearer → { plans }   forget one finished event
  *
  * A plan (event) says, for a time window, which positions are expected and who covers which sector;
- * its per-position notes are only returned to the admin. `live` holds sector assignments the admin
+ * Everyone sees events including their per-position notes; only the event `remark` is admin-only. `live` holds sector assignments the admin
  * makes for right now (they win over the event). Who is online always comes from VATSIM.
  * Env: ADMIN_TOKEN (required, >= 16 chars) · PORT=8787 · HOST=127.0.0.1 · DATA_FILE=data/plans.json
  *      STATIC_DIR=dist · ALLOWED_ORIGIN (only if the site is served from a different origin)
@@ -40,6 +42,7 @@ const MAX_LIVE_MS = 48 * 3_600_000;
 
 const storage = mysqlConfigured(process.env) ? await mysqlStorage(process.env, DATA_FILE) : fileStorage(DATA_FILE);
 const { load, save } = storage;
+const HISTORY_LIMIT = 200;
 
 const sha = (s: string) => createHash('sha256').update(s).digest();
 const tokenHash = sha(TOKEN);
@@ -65,6 +68,8 @@ function sanitizeAssign(input: unknown, allowed?: string[]): [string, string][] 
 }
 
 const clean = (v: unknown, max: number) => (typeof v === 'string' ? v.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, max) : '');
+/** Like clean, but keeps line breaks (multi-line remarks). */
+const cleanText = (v: unknown, max: number) => (typeof v === 'string' ? v.replace(/\r\n?/g, '\n').replace(/[\u0000-\u0009\u000b-\u001f\u007f]/g, ' ').trim().slice(0, max) : '');
 
 function sanitizeLive(input: unknown): Live | null | undefined {
   if (input === null || input === undefined) return null;
@@ -101,7 +106,8 @@ function sanitize(input: unknown): Plan[] | null {
         if (positions.includes(k) && note) notes[k] = note;
       }
     ids.add(id);
-    if (end > now) out.push({ id, name, start, end, positions, assign, notes });
+    const remark = cleanText(p.remark, 1000);
+    if (end > now) out.push({ id, name, start, end, positions, assign, notes, ...(remark ? { remark } : {}) });
   }
   return out;
 }
@@ -123,7 +129,7 @@ function send(res: ServerResponse, status: number, body: unknown) {
   res.writeHead(status, {
     'Content-Type': 'application/json',
     'Cache-Control': 'no-store',
-    ...(ORIGIN ? { 'Access-Control-Allow-Origin': ORIGIN, 'Access-Control-Allow-Headers': 'Authorization, Content-Type', 'Access-Control-Allow-Methods': 'GET, PUT, OPTIONS' } : {}),
+    ...(ORIGIN ? { 'Access-Control-Allow-Origin': ORIGIN, 'Access-Control-Allow-Headers': 'Authorization, Content-Type', 'Access-Control-Allow-Methods': 'GET, PUT, DELETE, OPTIONS' } : {}),
   });
   res.end(status === 204 ? undefined : JSON.stringify(body));
 }
@@ -141,7 +147,14 @@ async function serveStatic(url: URL, res: ServerResponse) {
     if ((await stat(file)).isDirectory()) file = join(file, 'index.html');
     await stat(file);
   } catch {
-    return send(res, 404, { error: 'not found' });
+    // Pretty URLs: /admin → admin.html
+    try {
+      if (extname(file)) throw new Error('has extension');
+      await stat(`${file}.html`);
+      file = `${file}.html`;
+    } catch {
+      return send(res, 404, { error: 'not found' });
+    }
   }
   res.writeHead(200, {
     'Content-Type': TYPES[extname(file)] ?? 'application/octet-stream',
@@ -159,7 +172,8 @@ createServer(async (req, res) => {
         const admin = isAdmin(req);
         const { plans, live } = await load();
         // Notes are for the admin only.
-        return send(res, 200, { plans: admin ? plans : plans.map(({ notes: _, ...p }) => p), live, admin });
+        // The event remark is for the admin only; everything else (including position notes) is public.
+        return send(res, 200, { plans: admin ? plans : plans.map(({ remark: _, ...p }) => p), live, admin, ...(admin ? { storage: storage.kind } : {}) });
       }
       if (req.method === 'PUT') {
         if (!isAdmin(req)) return send(res, 401, { error: 'unauthorized' });
@@ -171,6 +185,16 @@ createServer(async (req, res) => {
         return send(res, 200, { plans, live, admin: true });
       }
       return send(res, 405, { error: 'method not allowed' });
+    }
+    if (url.pathname === '/api/plans/history') {
+      if (req.method === 'OPTIONS') return send(res, 204, null);
+      if (!isAdmin(req)) return send(res, 401, { error: 'unauthorized' });
+      if (req.method === 'DELETE') {
+        const id = url.searchParams.get('id') ?? '';
+        if (!/^[a-z0-9]{1,24}$/.test(id)) return send(res, 400, { error: 'invalid id' });
+        await storage.forget(id);
+      } else if (req.method !== 'GET') return send(res, 405, { error: 'method not allowed' });
+      return send(res, 200, { plans: await storage.history(HISTORY_LIMIT) });
     }
     if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, { error: 'method not allowed' });
     await serveStatic(url, res);

@@ -14,8 +14,10 @@ export interface Plan {
   positions: string[];
   /** [sector key, position] pairs: "HI-30" → "31". */
   assign: [string, string][];
-  /** Admin-only remarks per expected position (never sent to other visitors). */
+  /** Public remarks per expected position. */
   notes?: Record<string, string>;
+  /** Admin-only remark about the whole event (never sent to other visitors). */
+  remark?: string;
 }
 
 /** Sector assignments the admin makes for right now; they beat a running event, sector by sector. */
@@ -37,7 +39,7 @@ export const token = {
   set: (v: string) => { try { v ? localStorage.setItem(TOKEN_KEY, v) : localStorage.removeItem(TOKEN_KEY); } catch { /* private mode */ } },
 };
 
-export interface Reply { plans: Plan[]; live: LiveEdit | null; admin: boolean }
+export interface Reply { plans: Plan[]; live: LiveEdit | null; admin: boolean; /** Admin only: where the server keeps events. */ storage?: string }
 
 async function call(init: RequestInit & { token?: string }): Promise<Reply> {
   const headers: Record<string, string> = { ...(init.body ? { 'Content-Type': 'application/json' } : {}) };
@@ -47,7 +49,19 @@ async function call(init: RequestInit & { token?: string }): Promise<Reply> {
   if (res.status === 400) throw new Error('The server rejected this plan');
   if (!res.ok) throw new Error(`Backend returned HTTP ${res.status}`);
   const r = (await res.json()) as Partial<Reply>;
-  return { plans: r.plans ?? [], live: r.live && r.live.expires > Date.now() ? r.live : null, admin: !!r.admin };
+  return { plans: r.plans ?? [], live: r.live && r.live.expires > Date.now() ? r.live : null, admin: !!r.admin, storage: r.storage };
+}
+
+/** Finished events (admin only), newest first; `forget` removes one. */
+export async function fetchHistory(t: string, forget?: string): Promise<Plan[]> {
+  const res = await fetch(`${BASE}/plans/history${forget ? `?id=${encodeURIComponent(forget)}` : ''}`, {
+    method: forget ? 'DELETE' : 'GET',
+    headers: { Authorization: `Bearer ${t}` },
+    cache: 'no-store',
+  });
+  if (res.status === 401) throw new Error('Wrong token');
+  if (!res.ok) throw new Error(`Backend returned HTTP ${res.status}`);
+  return ((await res.json()) as { plans?: Plan[] }).plans ?? [];
 }
 
 export const fetchPlans = (t = token.get()) => call({ token: t });

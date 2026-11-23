@@ -54,12 +54,15 @@ const withColors = (fc: GeoJSON.FeatureCollection, key: string, colors: Map<stri
   features: fc.features.map((f) => ({ ...f, properties: { ...f.properties, color: colors.get(f.properties?.[key] as string) ?? null } })),
 });
 
-export function createMap(container: HTMLElement, data: MapData, dark: boolean, bounds: maplibregl.LngLatBoundsLike): MapView {
+export function createMap(
+  container: HTMLElement, data: MapData, dark: boolean, bounds: maplibregl.LngLatBoundsLike,
+  pad: maplibregl.PaddingOptions | number = padding(),
+): MapView {
   const map = new maplibregl.Map({
     container,
     style: dark ? STYLES.dark : STYLES.light,
     bounds,
-    fitBoundsOptions: { padding: padding() },
+    fitBoundsOptions: { padding: pad },
     attributionControl: { compact: true },
     dragRotate: false,
     pitchWithRotate: false,
@@ -210,7 +213,9 @@ function boundaryFilter(s: Stratum): FilterSpecification {
 /** Map padding that keeps ZME clear of the floating chrome. */
 export function padding() {
   const mobile = window.matchMedia('(max-width: 760px)').matches;
-  if (!mobile) return { top: 90, bottom: 40, left: 420, right: 60 };
+  const hidden = document.documentElement.dataset.panel === 'hidden';
+  if (!mobile) return { top: 90, bottom: 40, left: hidden ? 60 : 420, right: 60 };
+  if (hidden) return { top: 76, bottom: 24, left: 16, right: 16 };
   const sheet = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--panel-visible')) || 170;
   return { top: 76, bottom: Math.min(sheet, window.innerHeight * 0.5) + 12, left: 16, right: 16 };
 }

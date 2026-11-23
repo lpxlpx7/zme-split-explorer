@@ -3,7 +3,7 @@ import type { ColorBook } from '../colors';
 import type { NeighborController, NeighborFacility, NeighborOwner, NeighborPiece } from '../neighbors';
 import type { Ownership, Piece } from '../ownership';
 import { POSITIONS, SECTORS, SECTOR_BY_KEY, STRATA, STRATUM_INFO, sectorKey, type Sector, type Stratum } from '../sectors';
-import { fmtRange, fmtTime, localZoneName, toInput, type Plan, type Tz } from '../plans';
+import { exclusiveOf, fmtRange, fmtTime, localZoneName, toInput, type Plan, type Tz } from '../plans';
 import type { OnlineController, VatsimPilot } from '../vatsim';
 import { icons } from './icons';
 import { PALETTE } from '../colors';
@@ -22,6 +22,9 @@ export interface ViewModel {
   neighborOwners: Map<string, NeighborOwner>;
   /** Live mode: the event in force and live edits, with how many of their assignments apply (position online). */
   plan: { plan: Plan | null; applied: number; liveApplied: number; liveUntil: number | null } | null;
+  /** Running and upcoming events (public; the admin-only remark is never sent to visitors). */
+  events: Plan[];
+  tz: Tz;
 }
 
 export const esc = (s: unknown) =>
@@ -99,6 +102,47 @@ export function renderControllers(vm: ViewModel) {
       </article>`;
     })
     .join('')}</div>`;
+}
+
+// ─── Events tab (public) ─────────────────────────────────────────────────────
+export function renderEvents(vm: ViewModel) {
+  const now = Date.now();
+  const tzSwitchPublic = `<div class="segmented small tz" style="--i:${vm.tz === 'utc' ? 0 : 1};margin:0 0 10px" role="tablist" aria-label="Time zone">
+      <span class="thumb"></span>
+      <button role="tab" data-tz="utc" aria-selected="${vm.tz === 'utc'}">UTC</button>
+      <button role="tab" data-tz="local" aria-selected="${vm.tz === 'local'}">Local · ${esc(localZoneName())}</button></div>`;
+  if (!vm.events.length) return `${tzSwitchPublic}<div class="empty-state">${icons.calendar}<p>No events planned.</p></div>`;
+  const cards = [...vm.events]
+    .sort((a, b) => a.start - b.start)
+    .map((p) => {
+      const active = p.start <= now && now < p.end;
+      const picked = exclusiveOf(p.assign);
+      const rows = p.positions
+        .map((id) => {
+          const pos = POSITIONS.get(id);
+          const ks = p.assign.filter(([, v]) => v === id).map(([k]) => k);
+          const cover = picked.has(id)
+            ? STRATA.map((st) => {
+                const xs = ks.filter((k) => k.startsWith(`${st}-`));
+                return xs.length ? `<div class="strat-row"><span class="strat-tag">${st}</span><div class="chips">${xs.map(sectorChip).join('')}</div></div>` : '';
+              }).join('')
+            : '<small class="muted">Auto (SOP)</small>';
+          const note = p.notes?.[id];
+          return `<div class="ev-pos"><span class="ctrl-badge" style="--c:${vm.colors.get(id) ?? 'var(--grey)'}">${id}</span>
+            <div class="ev-pos-main"><div><b>${esc(pos?.name ?? '')}</b> <small class="muted">${esc(pos?.callsign ?? '')} · ${esc(pos?.freq ?? '')}</small></div>
+              ${note ? `<div class="ev-note">${esc(note)}</div>` : ''}${cover}</div></div>`;
+        })
+        .join('');
+      return `<article class="plan${active ? ' active' : ''}">
+        <div class="plan-name">${esc(p.name)}${active ? '<span class="tag on">Now</span>' : ''}</div>
+        <div class="plan-time"><div>${esc(fmtRange(p.start, p.end, vm.tz))}</div><small class="muted">${esc(fmtRange(p.start, p.end, vm.tz === 'utc' ? 'local' : 'utc'))}</small></div>
+        ${p.remark ? `<div class="ev-remark">${icons.lock}<span>${esc(p.remark)}</span></div>` : ''}
+        <div class="ev-positions">${rows}</div>
+        <div class="plan-foot"><small class="muted">${p.positions.length} position${p.positions.length === 1 ? '' : 's'} expected</small><button class="btn" data-event-preview="${p.id}">Preview</button></div>
+      </article>`;
+    })
+    .join('');
+  return `${tzSwitchPublic}<p class="muted small" style="margin:0 4px 10px">Planned splits. An event only applies to its positions that are really logged on to VATSIM.</p><div class="list">${cards}</div>`;
 }
 
 // ─── Sectors tab ─────────────────────────────────────────────────────────────
@@ -360,6 +404,7 @@ export function renderPlanList(opts: { plans: Plan[]; tz: Tz; busy: boolean; err
         <div class="plan-time"><div>${esc(fmtRange(p.start, p.end, opts.tz))}</div>
           <small class="muted">${esc(fmtRange(p.start, p.end, other(opts.tz)))}</small></div>
         <div class="chips">${chips || '<span class="muted small">No positions</span>'}</div>
+        ${p.remark ? `<div class="ev-remark">${icons.lock}<span>${esc(p.remark)}</span></div>` : ''}
         ${notes.length ? `<ul class="plan-notes">${notes.map(([id, v]) => `<li><b>${id}</b> ${esc(v)}</li>`).join('')}</ul>` : ''}
         <div class="plan-foot"><small class="muted">${p.assign.length ? 'Sectors picked by hand' : 'All Auto (SOP)'}</small>
           <span class="plan-btns"><button class="btn" data-plan-preview="${p.id}">Preview</button><button class="btn" data-plan-edit="${p.id}" ${opts.busy ? 'disabled' : ''}>Edit</button><button class="btn danger" data-plan-delete="${p.id}" ${opts.busy ? 'disabled' : ''}>Delete</button></span></div>
@@ -371,7 +416,7 @@ export function renderPlanList(opts: { plans: Plan[]; tz: Tz; busy: boolean; err
     <div class="list">${liveCard}</div>
     <section class="group"><h3>Events<span class="count">${opts.plans.length}</span></h3>
       <p class="muted small" style="margin:0 4px 8px">Say ahead of time which positions are expected and who covers which sector. VATSIM decides who is online: an event only applies to its positions that are really logged on.</p>
-      <div class="presets" style="margin-top:0"><button class="btn tinted" data-plan-new ${opts.busy ? 'disabled' : ''}>New event</button><button class="btn" data-plan-signout>Sign out</button></div>
+      <div class="presets" style="margin-top:0"><button class="btn tinted" data-plan-new ${opts.busy ? 'disabled' : ''}>New event</button><a class="btn" href="./admin.html" target="_blank" rel="noopener">Open admin panel</a><button class="btn" data-plan-signout>Sign out</button></div>
       <div class="list">${cards || '<div class="empty-state"><p>No events planned.</p></div>'}</div></section>
     <div style="height:calc(24px + var(--safe-bottom))"></div>`;
 }
@@ -396,6 +441,8 @@ export interface Draft {
   explicit: Set<string>;
   assign: Map<string, string>;
   notes: Map<string, string>;
+  /** Admin-only remark about the whole event. */
+  remark: string;
   isNew: boolean;
 }
 
@@ -426,7 +473,7 @@ function coverCard(d: Draft, id: string, i: number, own: Ownership) {
   return `<article class="ctrl cover-card" style="--c:${PALETTE[i % PALETTE.length]}">
       <div class="ctrl-head"><span class="ctrl-badge">${id}</span>
         <div class="ctrl-id"><div class="cover-name">${esc(pos?.name ?? '')}</div><div class="ctrl-name">${esc(pos?.callsign ?? '')} · ${esc(pos?.freq ?? '')}</div></div></div>
-      <input class="note-input" data-plan-note="${id}" maxlength="120" placeholder="Note (optional, only you can see it)" value="${esc(d.notes.get(id) ?? '')}">
+      <input class="note-input" data-plan-note="${id}" maxlength="120" placeholder="Note (optional) · Public — everyone sees it" value="${esc(d.notes.get(id) ?? '')}">
       <div class="segmented small cover-mode" style="--n:2; --i:${pick ? 1 : 0}">
         <span class="thumb"></span>
         <button type="button" data-cover-mode="${id}" data-mode="auto" aria-selected="${!pick}">Auto (SOP)</button>
@@ -454,7 +501,8 @@ export function renderPlanEditor(opts: { draft: Draft; tz: Tz; busy: boolean; er
   const cards = [...d.positions].sort().map((id, i) => coverCard(d, id, i, opts.ownership)).join('');
   const uncovered = SECTORS.filter((x) => !opts.ownership.sectorOwners.get(sectorKey(x.stratum, x.id))?.size).map((x) => `${x.stratum} ${x.id}`);
   return `${err}
-    <label class="name-row card-row"><span>Name</span><input id="plan-name" maxlength="60" placeholder="e.g. Memphis FNO" value="${esc(d.name)}"></label>
+    <label class="name-row card-row"><span>Name <span class="vis public">Public</span></span><input id="plan-name" maxlength="60" placeholder="e.g. Memphis FNO" value="${esc(d.name)}"></label>
+    <label class="remark-row card-row"><span>Remark <span class="vis private">${icons.lock}Private</span></span><textarea id="plan-remark" maxlength="1000" rows="2" placeholder="Only admins see this — never shown on the public map">${esc(d.remark)}</textarea></label>
     ${tzSwitch(opts.tz)}
     <div class="time-fields">${field('plan-start', 'Start', d.start)}${field('plan-end', 'End', d.end)}</div>
     <section class="group"><h3>Expected positions</h3>

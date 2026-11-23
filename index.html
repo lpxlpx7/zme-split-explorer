@@ -29,6 +29,7 @@
     </div>
 
     <div class="map-buttons material" role="toolbar" aria-label="Map">
+      <button class="map-btn" data-action="show-panel" id="panel-show-btn" title="Show the ZME Split Explorer panel" aria-label="Show panel" hidden></button>
       <button class="map-btn" data-action="toggle-neighbors" id="neighbors-btn" aria-pressed="true" title="Show adjacent ARTCCs"></button>
       <button class="map-btn" data-action="recenter" id="recenter-btn" title="Recenter on ZME"></button>
     </div>
@@ -44,6 +45,7 @@
           </div>
           <button class="icon-btn tinted" data-action="open-plans" id="plans-btn" aria-label="Planned splits" title="Planned splits" hidden></button>
           <button class="icon-btn tinted" data-action="open-preview" id="preview-btn" aria-label="Preview splits" title="Preview splits"></button>
+          <button class="icon-btn" data-action="hide-panel" id="panel-hide-btn" aria-label="Hide panel" title="Hide panel"></button>
         </header>
         <form id="search" class="search" autocomplete="off" role="search">
           <span class="search-icon"></span>
@@ -58,10 +60,11 @@
         </div>
         <div class="status" id="status"></div>
 
-        <div class="segmented small" id="tabs" role="tablist" aria-label="View">
+        <div class="segmented small" id="tabs" role="tablist" aria-label="View" style="--n:4">
           <span class="thumb"></span>
           <button role="tab" data-t="controllers">Controllers</button>
           <button role="tab" data-t="sectors">Sectors</button>
+          <button role="tab" data-t="events">Events</button>
           <button role="tab" data-t="neighbors">Neighbors</button>
         </div>
 

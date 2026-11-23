@@ -1,3 +1,4 @@
+import { resolve } from 'node:path';
 import { defineConfig, type Plugin } from 'vite';
 
 /**
@@ -26,5 +27,9 @@ export default defineConfig({
   // Reachable from a phone on the same Wi-Fi: open the "Network" URL Vite prints.
   server: { host: true, open: true },
   preview: { host: true },
-  build: { chunkSizeWarningLimit: 1200 },
+  build: {
+    chunkSizeWarningLimit: 1200,
+    // Two pages: the public map and the admin panel (admin.html, served at /admin by server/index.ts).
+    rolldownOptions: { input: { main: resolve(import.meta.dirname, 'index.html'), admin: resolve(import.meta.dirname, 'admin.html') } },
+  },
 });

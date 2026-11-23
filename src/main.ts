@@ -27,6 +27,7 @@ import {
   renderLogin,
   renderPlanEditor,
   renderPlanList,
+  renderEvents,
   renderPreview,
   renderSectors,
   renderStatus,
@@ -39,8 +40,8 @@ import {
 import { BottomSheet } from './ui/sheet';
 import { POLL_MS, fetchVatsim, zmeControllers, type OnlineController, type VatsimData, type VatsimPilot } from './vatsim';
 
-type Tab = 'controllers' | 'sectors' | 'neighbors';
-const TABS: Tab[] = ['controllers', 'sectors', 'neighbors'];
+type Tab = 'controllers' | 'sectors' | 'neighbors' | 'events';
+const TABS: Tab[] = ['controllers', 'sectors', 'events', 'neighbors'];
 
 const store = {
   get: (k: string) => { try { return localStorage.getItem(k); } catch { return null; } },
@@ -188,6 +189,11 @@ function setupChrome() {
   $('#preview-btn').innerHTML = icons.sliders;
   $('#plans-btn').innerHTML = icons.calendar;
   $('#recenter-btn').innerHTML = icons.location;
+  $('#panel-hide-btn').innerHTML = icons.sidebar;
+  $('#panel-show-btn').innerHTML = icons.sidebar;
+  const hidden = store.get('asx.panel') === 'hidden';
+  document.documentElement.dataset.panel = hidden ? 'hidden' : 'shown';
+  $('#panel-show-btn').hidden = !hidden;
   $('#neighbors-btn').innerHTML = icons.layers;
   $('.search-icon').innerHTML = icons.search;
   $('#preview-sheet .close').innerHTML = icons.close;
@@ -227,6 +233,8 @@ function setupChrome() {
 
 // ─── live data ───────────────────────────────────────────────────────────────
 async function poll() {
+  // Events come from our own server and are quick; show them without waiting for the big VATSIM feed.
+  const plans = refreshPlans().then(() => { if (!state.lastFetch) recompute(); });
   try {
     state.data = await fetchVatsim();
     state.live = zmeControllers(state.data);
@@ -235,7 +243,7 @@ async function poll() {
   } catch (e) {
     state.error = e instanceof Error ? e.message : String(e);
   }
-  await refreshPlans();
+  await plans;
   recompute();
   setTimeout(poll, document.hidden ? POLL_MS * 4 : POLL_MS);
 }
@@ -321,6 +329,8 @@ function viewModel(): ViewModel {
     neighborCtrls: state.neighborCtrls,
     neighborOwners: state.neighborOwners,
     plan: planStatus(),
+    events: state.plans,
+    tz: state.tz,
   };
 }
 
@@ -556,7 +566,8 @@ function aircraftFeatures(): GeoJSON.FeatureCollection {
 // ─── rendering ───────────────────────────────────────────────────────────────
 function renderBody(vm = viewModel()) {
   const body = $('#body');
-  body.innerHTML = state.tab === 'controllers' ? renderControllers(vm) : state.tab === 'sectors' ? renderSectors(vm) : renderNeighbors(vm);
+  body.innerHTML =
+    state.tab === 'controllers' ? renderControllers(vm) : state.tab === 'sectors' ? renderSectors(vm) : state.tab === 'events' ? renderEvents(vm) : renderNeighbors(vm);
 }
 
 function renderClock() {
@@ -631,6 +642,7 @@ function bindUI() {
     if (a === 'close-preview') togglePreview(false);
     if (a === 'close-aircraft') { state.selectedPilot = null; recompute(); }
     if (a === 'recenter') view.map.fitBounds(zmeBounds, { padding: padding() });
+    if (a === 'hide-panel' || a === 'show-panel') setPanelHidden(a === 'hide-panel');
     if (a === 'toggle-neighbors') setNeighborsVisible(!state.neighborsVisible);
     if (a === 'exit-preview') { state.preview = false; togglePreview(false); state.sheet = 'preview'; renderPreviewSheet(); recompute(); }
     const pick = (e.target as HTMLElement).closest<HTMLElement>('[data-menu-assign]');
@@ -642,6 +654,18 @@ function bindUI() {
   });
   document.addEventListener('pointerdown', (e) => {
     if (menuKey && !(e.target as HTMLElement).closest('#assign-menu')) closeMenu();
+  });
+  $('#body').addEventListener('click', (e) => {
+    const t = e.target as HTMLElement;
+    const tz = t.closest<HTMLElement>('[data-tz]')?.dataset.tz as Tz | undefined;
+    if (tz && tz !== state.tz) {
+      state.tz = tz;
+      store.set('asx.tz', tz);
+      renderBody();
+    }
+    const pv = t.closest<HTMLElement>('[data-event-preview]')?.dataset.eventPreview;
+    const plan = pv && state.plans.find((p) => p.id === pv);
+    if (plan) previewPlan(plan);
   });
   $('#body').addEventListener('change', (e) => {
     const t = e.target as HTMLInputElement;
@@ -951,6 +975,7 @@ function startDraft(plan?: Plan) {
     assign: new Map(plan?.assign ?? []),
     explicit: exclusiveOf(plan?.assign ?? []),
     notes: new Map(Object.entries(plan?.notes ?? {})),
+    remark: plan?.remark ?? '',
     isNew: !plan,
   };
   state.adminError = null;
@@ -990,6 +1015,7 @@ async function saveDraft() {
     positions: [...d.positions].sort(),
     assign: [...draftAssign(d)],
     notes: Object.fromEntries([...d.notes].filter(([id, v]) => d.positions.has(id) && v.trim()).map(([id, v]) => [id, v.trim()])),
+    ...(d.remark.trim() ? { remark: d.remark.trim() } : {}),
   };
   if (await commitPlans([...state.plans.filter((p) => p.id !== d.id), plan])) endDraft();
   else rerenderSheet();
@@ -1009,6 +1035,7 @@ function bindPlans() {
     const d = state.draft;
     if (!d || state.sheet !== 'plans') return;
     if (t.id === 'plan-name') d.name = t.value;
+    if (t.id === 'plan-remark') d.remark = t.value;
     if (t.dataset.planNote) d.notes.set(t.dataset.planNote, t.value);
   });
   sheet.addEventListener('change', (e) => {
@@ -1077,20 +1104,7 @@ function bindPlans() {
     if (el('live-clear') || el('live-assign-reset')) void commitPlans(state.plans, null).then(() => { recompute(); rerenderSheet(); });
     const pv = el('plan-preview')?.dataset.planPreview;
     const pvPlan = pv && state.plans.find((p) => p.id === pv);
-    if (pvPlan) {
-      // Load the event into the local Preview.
-      state.previewSet = new Set(pvPlan.positions);
-      state.previewAssign = new Map(pvPlan.assign);
-      state.previewExclusive = exclusiveOf(pvPlan.assign);
-      savePreview();
-      state.preview = true;
-      state.adminError = null;
-      state.sheet = 'preview';
-      recompute();
-      rerenderSheet(true);
-      renderEditHint();
-      return;
-    }
+    if (pvPlan) return previewPlan(pvPlan);
     const edit = el('plan-edit')?.dataset.planEdit;
     if (edit) startDraft(state.plans.find((p) => p.id === edit));
     const del = el('plan-delete')?.dataset.planDelete;
@@ -1127,6 +1141,28 @@ function bindPlans() {
   };
   window.addEventListener('hashchange', openPreviewFromHash);
   openPreviewFromHash();
+}
+
+/** Load an event into the local Preview (anyone can do this). */
+function previewPlan(plan: Plan) {
+  state.previewSet = new Set(plan.positions);
+  state.previewAssign = new Map(plan.assign);
+  state.previewExclusive = exclusiveOf(plan.assign);
+  savePreview();
+  state.preview = true;
+  state.adminError = null;
+  openSheet('preview');
+  recompute();
+  rerenderSheet(true);
+  renderEditHint();
+}
+
+/** Hide the left panel (or the bottom sheet on phones) to see the whole map; a map button brings it back. */
+function setPanelHidden(hidden: boolean) {
+  document.documentElement.dataset.panel = hidden ? 'hidden' : 'shown';
+  store.set('asx.panel', hidden ? 'hidden' : 'shown');
+  $('#panel-show-btn').hidden = !hidden;
+  view?.map.easeTo({ padding: padding(), duration: 450 });
 }
 
 /** Forget picks/notes of positions that are no longer expected. */

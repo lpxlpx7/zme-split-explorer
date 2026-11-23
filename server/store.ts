@@ -3,15 +3,22 @@
  *
  * - MySQL / MariaDB when MYSQL_URL (mysql://user:pass@host:3306/db) or MYSQL_HOST + MYSQL_USER +
  *   MYSQL_PASSWORD + MYSQL_DATABASE (+ MYSQL_PORT) are set. The tables are created on start, and an
- *   existing data/plans.json is imported once while the tables are empty. Finished events stay in the
- *   table as history; only events the admin deletes are removed.
+ *   existing data/plans.json is imported once while the tables are empty.
  * - Otherwise a JSON file (DATA_FILE, default data/plans.json), as before.
+ * Either way finished events are kept as history (the admin panel lists them); events the admin deletes
+ * before they are over are removed.
  */
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { Pool, RowDataPacket } from 'mysql2/promise';
 
-export interface Plan { id: string; name: string; start: number; end: number; positions: string[]; assign: [string, string][]; notes: Record<string, string> }
+export interface Plan {
+  id: string; name: string; start: number; end: number; positions: string[]; assign: [string, string][];
+  /** Public, per position. */
+  notes: Record<string, string>;
+  /** Admin-only remark about the whole event. */
+  remark?: string;
+}
 export interface Live { assign: [string, string][]; expires: number }
 export interface Store { plans: Plan[]; live: Live | null }
 
@@ -21,7 +28,14 @@ export interface Storage {
   load(): Promise<Store>;
   /** Replace the running/upcoming events and the live edits. */
   save(store: Store): Promise<void>;
+  /** Finished events, newest first. */
+  history(limit: number): Promise<Plan[]>;
+  /** Remove one finished event. */
+  forget(id: string): Promise<void>;
 }
+
+const FILE_HISTORY = 200;
+type FileData = Partial<Store> & { history?: Plan[] };
 
 /** Drop what is over; tolerate files written by older versions. */
 function current(raw: Partial<Store>): Store {
@@ -32,23 +46,42 @@ function current(raw: Partial<Store>): Store {
   };
 }
 
-async function readJson(file: string): Promise<Partial<Store> | null> {
+async function readJson(file: string): Promise<FileData | null> {
   try {
-    return JSON.parse(await readFile(file, 'utf8')) as Partial<Store>;
+    return JSON.parse(await readFile(file, 'utf8')) as FileData;
   } catch {
     return null;
   }
 }
 
 export function fileStorage(file: string): Storage {
+  const write = async (data: FileData) => {
+    await mkdir(dirname(file), { recursive: true });
+    const tmp = `${file}.tmp`;
+    await writeFile(tmp, JSON.stringify(data));
+    await rename(tmp, file); // atomic: a crash never leaves a half-written file
+  };
+  /** Everything finished so far: the history plus events that ended since the last save. */
+  const finished = (raw: FileData) => {
+    const now = Date.now();
+    const seen = new Set<string>();
+    return [...(raw.plans ?? []).filter((p) => p.end <= now), ...(raw.history ?? [])]
+      .filter((p) => !seen.has(p.id) && seen.add(p.id))
+      .map((p) => ({ ...p, name: p.name ?? 'Event', notes: p.notes ?? {} }))
+      .sort((a, b) => b.end - a.end)
+      .slice(0, FILE_HISTORY);
+  };
   return {
     kind: `file ${file}`,
     load: async () => current((await readJson(file)) ?? {}),
     async save(store) {
-      await mkdir(dirname(file), { recursive: true });
-      const tmp = `${file}.tmp`;
-      await writeFile(tmp, JSON.stringify(store));
-      await rename(tmp, file); // atomic: a crash never leaves a half-written file
+      const ids = new Set(store.plans.map((p) => p.id));
+      await write({ ...store, history: finished((await readJson(file)) ?? {}).filter((p) => !ids.has(p.id)) });
+    },
+    history: async (limit) => finished((await readJson(file)) ?? {}).slice(0, limit),
+    async forget(id) {
+      const raw = (await readJson(file)) ?? {};
+      await write({ ...current(raw), history: finished(raw).filter((p) => p.id !== id) });
     },
   };
 }
@@ -62,6 +95,7 @@ const SCHEMA = [
      positions  TEXT         NOT NULL,
      assign     TEXT         NOT NULL,
      notes      TEXT         NOT NULL,
+     remark     TEXT         NULL,
      updated_at TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
      KEY idx_end (end_ms)
    ) DEFAULT CHARSET=utf8mb4`,
@@ -72,7 +106,7 @@ const SCHEMA = [
    ) DEFAULT CHARSET=utf8mb4`,
 ];
 
-interface PlanRow extends RowDataPacket { id: string; name: string; start_ms: number | string; end_ms: number | string; positions: string; assign: string; notes: string }
+interface PlanRow extends RowDataPacket { id: string; name: string; start_ms: number | string; end_ms: number | string; positions: string; assign: string; notes: string; remark: string | null }
 interface LiveRow extends RowDataPacket { assign: string; expires_ms: number | string }
 
 export async function mysqlStorage(env: NodeJS.ProcessEnv, legacyFile: string): Promise<Storage> {
@@ -84,7 +118,17 @@ export async function mysqlStorage(env: NodeJS.ProcessEnv, legacyFile: string): 
         database: env.MYSQL_DATABASE, connectionLimit: 5, supportBigNumbers: true,
       });
   for (const sql of SCHEMA) await pool.query(sql);
+  // Tables created by an older version have no remark column yet.
+  try {
+    await pool.query('ALTER TABLE zme_plans ADD COLUMN remark TEXT NULL AFTER notes');
+  } catch (e) {
+    if ((e as { code?: string }).code !== 'ER_DUP_FIELDNAME') throw e;
+  }
 
+  const toPlan = (r: PlanRow): Plan => ({
+    id: r.id, name: r.name, start: Number(r.start_ms), end: Number(r.end_ms),
+    positions: JSON.parse(r.positions), assign: JSON.parse(r.assign), notes: JSON.parse(r.notes), ...(r.remark ? { remark: r.remark } : {}),
+  });
   const storage: Storage = {
     kind: `mysql ${env.MYSQL_URL ? new URL(env.MYSQL_URL).host : `${env.MYSQL_HOST}:${env.MYSQL_PORT ?? 3306}`}/${env.MYSQL_URL ? new URL(env.MYSQL_URL).pathname.slice(1) : env.MYSQL_DATABASE}`,
     async load() {
@@ -92,10 +136,7 @@ export async function mysqlStorage(env: NodeJS.ProcessEnv, legacyFile: string): 
       const [rows] = await pool.query<PlanRow[]>('SELECT * FROM zme_plans WHERE end_ms > ? ORDER BY start_ms', [now]);
       const [live] = await pool.query<LiveRow[]>('SELECT assign, expires_ms FROM zme_live WHERE id = 1 AND expires_ms > ?', [now]);
       return {
-        plans: rows.map((r) => ({
-          id: r.id, name: r.name, start: Number(r.start_ms), end: Number(r.end_ms),
-          positions: JSON.parse(r.positions), assign: JSON.parse(r.assign), notes: JSON.parse(r.notes),
-        })),
+        plans: rows.map(toPlan),
         live: live[0] ? { assign: JSON.parse(live[0].assign), expires: Number(live[0].expires_ms) } : null,
       };
     },
@@ -111,10 +152,10 @@ export async function mysqlStorage(env: NodeJS.ProcessEnv, legacyFile: string): 
         );
         for (const p of plans)
           await conn.query(
-            `INSERT INTO zme_plans (id, name, start_ms, end_ms, positions, assign, notes) VALUES (?, ?, ?, ?, ?, ?, ?)
+            `INSERT INTO zme_plans (id, name, start_ms, end_ms, positions, assign, notes, remark) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
              ON DUPLICATE KEY UPDATE name = VALUES(name), start_ms = VALUES(start_ms), end_ms = VALUES(end_ms),
-               positions = VALUES(positions), assign = VALUES(assign), notes = VALUES(notes)`,
-            [p.id, p.name, p.start, p.end, JSON.stringify(p.positions), JSON.stringify(p.assign), JSON.stringify(p.notes)],
+               positions = VALUES(positions), assign = VALUES(assign), notes = VALUES(notes), remark = VALUES(remark)`,
+            [p.id, p.name, p.start, p.end, JSON.stringify(p.positions), JSON.stringify(p.assign), JSON.stringify(p.notes), p.remark || null],
           );
         if (live)
           await conn.query(
@@ -129,6 +170,13 @@ export async function mysqlStorage(env: NodeJS.ProcessEnv, legacyFile: string): 
       } finally {
         conn.release();
       }
+    },
+    async history(limit) {
+      const [rows] = await pool.query<PlanRow[]>('SELECT * FROM zme_plans WHERE end_ms <= ? ORDER BY end_ms DESC LIMIT ?', [Date.now(), limit]);
+      return rows.map(toPlan);
+    },
+    async forget(id) {
+      await pool.query('DELETE FROM zme_plans WHERE id = ? AND end_ms <= ?', [id, Date.now()]);
     },
   };
 

@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#f2f2f7" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" />
+    <meta name="robots" content="noindex" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="ZME Admin" />
+    <title>ZME Admin</title>
+    <link rel="icon" type="image/png" href="./favicon.png" />
+    <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
+  </head>
+  <body>
+    <div id="app" class="app" data-nav="root" hidden>
+      <nav class="sidebar" id="sidebar" aria-label="Admin sections"></nav>
+      <section class="detail">
+        <header class="toolbar" id="toolbar"></header>
+        <div class="detail-body" id="detail-body">
+          <aside class="map-pane" id="map-pane" hidden>
+            <div class="map-head" id="map-head"></div>
+            <div class="map-box"><div id="map"></div></div>
+            <div class="map-legend" id="map-legend"></div>
+          </aside>
+          <main class="content" id="content"></main>
+        </div>
+      </section>
+    </div>
+
+    <div id="login" class="login" hidden>
+      <form class="login-card" id="login-form" autocomplete="off">
+        <img src="./zme_logo.png" alt="" width="72" height="72" class="login-icon" />
+        <h1>ZME Admin</h1>
+        <p class="secondary">Sign in with the access token to manage events and live sector assignments.</p>
+        <div class="login-field">
+          <input type="password" id="login-token" placeholder="Access token" aria-label="Access token" autocomplete="current-password" spellcheck="false" />
+          <button type="submit" class="login-go" aria-label="Sign in" id="login-go"></button>
+        </div>
+        <p class="login-error" id="login-error" hidden></p>
+        <a class="login-back" href="./">Back to the live map</a>
+      </form>
+    </div>
+
+    <div id="alert" class="alert-backdrop" hidden></div>
+    <div id="hud" class="hud" hidden></div>
+
+    <script type="module" src="/src/admin/main.ts"></script>
+  </body>
+</html>
