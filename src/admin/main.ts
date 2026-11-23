@@ -573,7 +573,7 @@ function renderLive() {
     ${ids.length ? '' : '<div class="banner">Nobody from Memphis Center is online on VATSIM, so there is no one to hand sectors to.</div>'}
     <div class="list-head">${segmented('stratum', STRATA.map((s) => [s, STRATUM_INFO[s].label]), state.stratum)}</div>
     <div data-filter-scope="live">
-      <div class="list-tools">${searchField('live', 'Search sectors — 22 63, Memphis, 132.55')}
+      <div class="list-tools">${searchField('live', 'Search sectors: 22 63, Memphis, 132.55')}
         <button type="button" class="link-btn" data-bulk-on="sel" ${enabled ? '' : 'disabled'}>Select Shown</button></div>
       <div class="group">${rows}<div class="cell empty filter-empty" hidden>No matching sectors.</div></div>
       <p class="footnote">Tick sectors to hand several over at once. Shift-click selects a range, like files in Finder.</p>
@@ -616,7 +616,7 @@ function renderEvents() {
 function renderHistory() {
   if (!state.history) return `${errorBanner()}<div class="spinner-wrap"><div class="spinner"></div></div>`;
   return `${errorBanner()}
-    <p class="lead">Finished events. Duplicate one to run it again: it gets the same weekday and time, next time round.</p>
+    <p class="lead">Finished events. Duplicate one to run it again at the same weekday and time.</p>
     <div data-filter-scope="history">
       <div class="list-tools">${searchField('history', 'Search history')}</div>
       <div class="group">${state.history.map((p) => eventRow(p, { history: true })).join('') || '<div class="cell empty">No finished events yet.</div>'}<div class="cell empty filter-empty" hidden>No matching events.</div></div>
@@ -674,9 +674,9 @@ function renderEditor() {
     return `<div class="group cover" style="--c:${colors.get(id)}">
       <div class="cell cover-head">${badge(id, colors.get(id))}<div class="cell-main"><div><b>${esc(pos?.name ?? '')}</b></div><div class="secondary small">${esc(pos?.callsign ?? '')} · ${esc(pos?.freq ?? '')}</div></div>
         ${segmented(`mode-${id}`, [['auto', 'Auto (SOP)'], ['pick', 'Pick Sectors']], pick ? 'pick' : 'auto')}</div>
-      <div class="cell"><input class="field" data-note="${id}" maxlength="120" placeholder="Note for this position — e.g. controller name, coordination" value="${esc(d.notes.get(id) ?? '')}">${vis(true)}</div>
+      <div class="cell"><input class="field" data-note="${id}" maxlength="120" placeholder="Note for this position, e.g. controller name or coordination" value="${esc(d.notes.get(id) ?? '')}">${vis(true)}</div>
       ${pick ? `<div class="cell column" data-filter-scope="sec-${id}">
-        <div class="list-tools">${searchField(`sec-${id}`, 'Search sectors — 2, HI, Memphis')}
+        <div class="list-tools">${searchField(`sec-${id}`, 'Search sectors: 2, HI, Memphis')}
           <button type="button" class="link-btn" data-bulk-on="sec-${id}">Pick Shown</button><button type="button" class="link-btn" data-bulk-off="sec-${id}">Unpick Shown</button></div>
         ${picker}<div class="secondary small filter-empty" hidden>No matching sectors.</div></div>` : ''}
       <div class="cell column"><div class="secondary small">${pick ? 'Covers exactly' : 'SOP gives it'}${works.length ? '' : ': nothing'}</div>${result}</div>
@@ -694,19 +694,19 @@ function renderEditor() {
     </div>
     <p class="footnote">Everyone can see the event: its name, times, positions, who covers what and the position notes.</p>
     <h2 class="section-title">Remark ${vis(false)}</h2>
-    <div class="group"><div class="cell"><textarea class="field area" id="ev-remark" maxlength="1000" rows="3" placeholder="Private remark — only admins see this, never shown on the public map">${esc(d.remark)}</textarea></div></div>
+    <div class="group"><div class="cell"><textarea class="field area" id="ev-remark" maxlength="1000" rows="3" placeholder="Only admins see this remark. It is never shown on the public map.">${esc(d.remark)}</textarea></div></div>
     <h2 class="section-title">Expected Positions <span class="secondary">${d.positions.size || ''}</span></h2>
     <div class="group">
       <div class="cell column">
         <div class="presets">${PRESETS.filter(([, v]) => v).map(([l, v]) => `<button type="button" class="capsule" data-preset="${v}">${esc(l)}</button>`).join('')}<button type="button" class="capsule" data-preset="">Clear</button></div>
       </div>
       <div class="cell column" data-filter-scope="pos">
-        <div class="list-tools">${searchField('pos', 'Search positions — 22 63 46, LO, Razorback')}
+        <div class="list-tools">${searchField('pos', 'Search positions: 22 63 46, LO, Razorback')}
           <button type="button" class="link-btn" data-bulk-on="pos">Pick Shown</button><button type="button" class="link-btn" data-bulk-off="pos">Unpick Shown</button></div>
         ${posChips}<div class="secondary small filter-empty" hidden>No matching positions.</div>
       </div>
     </div>
-    <p class="footnote">Shift-click picks a range. Search accepts several numbers at once: “22 63 46”.</p>
+    <p class="footnote">Shift-click picks a range. Search takes several numbers at once, e.g. "22 63 46".</p>
     ${ids.length ? `<h2 class="section-title">Who Covers What</h2>
       <p class="footnote top">Auto follows the SOP among the Auto positions; Pick Sectors makes a position cover exactly those.</p>
       ${coverage}

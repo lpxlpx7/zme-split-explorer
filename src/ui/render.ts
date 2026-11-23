@@ -272,7 +272,7 @@ export interface AssignOpts {
  * Search box for the items with data-ft inside the nearest [data-filter-scope]. Filtering is done in place
  * by main.ts (applyFilters), so typing never re-renders and keeps focus.
  */
-export const filterBox = (scope: string, placeholder = 'Search number or name… (e.g. 22 63, LO, Memphis)') =>
+export const filterBox = (scope: string, placeholder = 'Search by number or name, e.g. 22 63, LO, Memphis') =>
   `<div class="filter-box">${icons.search}<input type="search" class="filter-input" data-filter="${scope}" placeholder="${esc(placeholder)}" aria-label="Search" autocomplete="off" spellcheck="false"></div>`;
 /** Text an item is searched by. */
 const ft = (stratum: string, id: string, name: string, extra = '') => `data-ft="${esc(`${stratum} ${id} ${name} ${extra}`.toLowerCase())}"`;
@@ -473,7 +473,7 @@ function coverCard(d: Draft, id: string, i: number, own: Ownership) {
   return `<article class="ctrl cover-card" style="--c:${PALETTE[i % PALETTE.length]}">
       <div class="ctrl-head"><span class="ctrl-badge">${id}</span>
         <div class="ctrl-id"><div class="cover-name">${esc(pos?.name ?? '')}</div><div class="ctrl-name">${esc(pos?.callsign ?? '')} · ${esc(pos?.freq ?? '')}</div></div></div>
-      <input class="note-input" data-plan-note="${id}" maxlength="120" placeholder="Note (optional) · Public — everyone sees it" value="${esc(d.notes.get(id) ?? '')}">
+      <input class="note-input" data-plan-note="${id}" maxlength="120" placeholder="Note (optional, public: everyone sees it)" value="${esc(d.notes.get(id) ?? '')}">
       <div class="segmented small cover-mode" style="--n:2; --i:${pick ? 1 : 0}">
         <span class="thumb"></span>
         <button type="button" data-cover-mode="${id}" data-mode="auto" aria-selected="${!pick}">Auto (SOP)</button>
@@ -502,7 +502,7 @@ export function renderPlanEditor(opts: { draft: Draft; tz: Tz; busy: boolean; er
   const uncovered = SECTORS.filter((x) => !opts.ownership.sectorOwners.get(sectorKey(x.stratum, x.id))?.size).map((x) => `${x.stratum} ${x.id}`);
   return `${err}
     <label class="name-row card-row"><span>Name <span class="vis public">Public</span></span><input id="plan-name" maxlength="60" placeholder="e.g. Memphis FNO" value="${esc(d.name)}"></label>
-    <label class="remark-row card-row"><span>Remark <span class="vis private">${icons.lock}Private</span></span><textarea id="plan-remark" maxlength="1000" rows="2" placeholder="Only admins see this — never shown on the public map">${esc(d.remark)}</textarea></label>
+    <label class="remark-row card-row"><span>Remark <span class="vis private">${icons.lock}Private</span></span><textarea id="plan-remark" maxlength="1000" rows="2" placeholder="Only admins see this. It is never shown on the public map.">${esc(d.remark)}</textarea></label>
     ${tzSwitch(opts.tz)}
     <div class="time-fields">${field('plan-start', 'Start', d.start)}${field('plan-end', 'End', d.end)}</div>
     <section class="group"><h3>Expected positions</h3>
