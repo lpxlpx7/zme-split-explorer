@@ -31,7 +31,10 @@ export function swatch(color: string | null) {
 }
 
 export function ownerCallsign(vm: ViewModel, id: string) {
-  return vm.controllers.find((c) => c.position === id)?.callsign ?? POSITIONS.get(id)?.callsign ?? `MEM_${id}_CTR`;
+  const c = vm.controllers.find((x) => x.position === id);
+  // Preview positions have no callsign: name the position instead.
+  if (c?.preview) return `${id} ${POSITIONS.get(id)?.name ?? ''}`.trim();
+  return c?.callsign ?? POSITIONS.get(id)?.callsign ?? `MEM_${id}_CTR`;
 }
 
 const duration = (logon: Date) => {
@@ -86,7 +89,7 @@ export function renderControllers(vm: ViewModel) {
       return `<article class="ctrl" style="--c:${vm.colors.get(c.position)}">
         <div class="ctrl-head">
           <span class="ctrl-badge">${c.position}</span>
-          <div class="ctrl-id"><div class="ctrl-callsign">${esc(c.callsign)}</div><div class="ctrl-name">${esc(pos?.name ?? '')} · ${esc(c.name)}${c.rating ? ` · ${esc(c.rating)}` : ''}</div></div>
+          <div class="ctrl-id"><div class="ctrl-callsign">${esc(c.callsign)}</div><div class="ctrl-name">${c.preview ? 'Preview' : `${esc(pos?.name ?? '')} · ${esc(c.name)}`}${c.rating ? ` · ${esc(c.rating)}` : ''}</div></div>
           <div class="ctrl-freq"><div>${esc(c.frequency)}</div><small>${c.preview ? esc(c.name) : duration(c.logon)}</small></div>
         </div>
         ${byStratum || '<div class="muted small" style="padding-top:6px">No airspace</div>'}
@@ -237,7 +240,7 @@ export function renderAssign(o: AssignOpts) {
     .join('');
   const n = [...o.assign.keys()].length;
   return `<section class="group"><h3>Sector assignments · ${STRATUM_INFO[o.stratum].label}${n ? `<span class="count">${n} manual</span>` : ''}</h3>
-    <p class="muted small" style="margin:0 4px 8px">Hand a sector to any ${o.attr === 'plan-assign' ? 'expected' : 'online'} position. Switch the stratum at the top of the map; on a computer you can also click a sector on the map.</p>
+    <p class="muted small" style="margin:0 4px 8px">${o.attr === 'plan-assign' ? 'Hand a sector to any expected position. It only applies while that position is really online. Switch the stratum at the top of the map.' : 'Hand a sector to any position you switched on. Switch the stratum at the top of the map; on a computer you can also click a sector on the map.'}</p>
     <div class="inset">${rows}</div>
     ${n ? `<div class="presets"><button class="btn" data-${o.attr}-reset ${o.busy ? 'disabled' : ''}>Reset all to SOP</button></div>` : ''}</section>`;
 }

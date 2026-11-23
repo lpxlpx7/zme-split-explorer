@@ -34,7 +34,8 @@ The whole project is TypeScript: the app (`src/`) and the data build (`tools/`, 
   (in its own sector when it works it, otherwise in the biggest sector it has).
 - **Preview** (everyone, this device only): toggle positions or pick a preset, then hand any sector to any
   of those positions (list in the sheet, or click a sector on the map on a computer). The setup is kept in
-  the browser's local storage and never sent anywhere. Link straight to it with `#preview`.
+  the browser's local storage and never sent anywhere. Link straight to it with `#preview`. Preview shows
+  no aircraft and no callsigns (positions are named instead), and no live adjacent-ARTCC controllers.
 
 ## Self-hosting & planned splits (admin)
 
@@ -54,7 +55,8 @@ so never serve it over plain HTTP. Env: `HOST`, `PORT`, `DATA_FILE`, `STATIC_DIR
 **Planned splits** let the admin say ahead of time, for a time window, which positions are expected and who
 covers which sector. Open the site with `#admin` appended, enter the token once; a calendar button then
 appears in the header. Times are entered in UTC or your local zone (toggle; the other zone is shown next to
-it), up to 72 h per plan and 90 days ahead. While you edit, the map shows the draft.
+it), up to 72 h per plan and 90 days ahead. Editing a plan never changes the map: it stays live, and the
+plan's resulting owners are listed in the editor.
 
 Live logins always decide: the map only ever shows positions that are really online. While a plan runs,
 its sector assignments apply to those of its positions that are online; planned positions that are not

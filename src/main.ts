@@ -235,32 +235,31 @@ async function refreshPlans() {
 }
 
 const sheetOpen = () => document.documentElement.dataset.preview === 'open';
-/** The admin is editing a plan: the map shows that draft instead of live data. */
-const editingDraft = () => !!state.draft && state.sheet === 'plans' && sheetOpen();
-
-const fake = (ids: Iterable<string>, name: string): OnlineController[] =>
+/** Preview positions are not people: no callsign, just the position. */
+const fake = (ids: Iterable<string>): OnlineController[] =>
   [...ids].sort().map((id) => {
     const p = POSITIONS.get(id)!;
-    return { position: id, callsign: p.callsign, frequency: p.freq, name, cid: 0, rating: '', logon: new Date(), preview: true };
+    return { position: id, callsign: p.name, frequency: p.freq, name: 'Preview', cid: 0, rating: '', logon: new Date(), preview: true };
   });
 
-/** Live logins always decide who is online; a plan can only re-assign sectors among them. */
+/**
+ * Who is online. Outside the local Preview this is always exactly the VATSIM feed: nothing the admin
+ * does (plans, drafts) can add a position.
+ */
 function controllers(): OnlineController[] {
-  if (editingDraft()) return fake(state.draft!.positions, 'Plan draft');
-  if (state.preview) return fake(state.previewSet, 'Preview');
+  if (state.preview) return fake(state.previewSet);
   return state.live;
 }
 
 /** Sector → position assignments in force for the current mode. */
 function assignMap(): Map<string, string> {
-  if (editingDraft()) return state.draft!.assign;
   if (state.preview) return state.previewAssign;
   return new Map(activePlan(state.plans)?.assign ?? []);
 }
 
 /** Live mode: the running plan and how many of its assignments have their position online. */
 function planStatus(): ViewModel['plan'] {
-  if (editingDraft() || state.preview) return null;
+  if (state.preview) return null;
   const plan = activePlan(state.plans);
   if (!plan) return null;
   const online = new Set(state.live.map((c) => c.position));
@@ -292,7 +291,7 @@ function recompute() {
   const ctrls = controllers();
   const online = new Set(ctrls.map((c) => c.position));
   state.ownership = computeOwnership(pieces, online, assignMap());
-  state.neighborCtrls = neighborControllers(state.data, facilities);
+  state.neighborCtrls = neighborControllers(state.preview ? null : state.data, facilities); // preview: no real people
   state.neighborOwners = computeNeighborOwners(neighborPieces, facilities, state.neighborCtrls);
 
   // ZME first so its positions get the first (coolest) colours.
@@ -310,9 +309,10 @@ function recompute() {
 
   const vm = viewModel();
   $('#status').innerHTML = renderStatus(vm);
-  const draft = editingDraft();
-  $('#preview-banner').hidden = !state.preview && !draft;
-  $('#preview-banner-text').textContent = draft ? 'Plan draft · not live' : 'Preview mode · not live';
+  $('#preview-banner').hidden = !state.preview;
+  // Preview is not live traffic: no aircraft, no search.
+  $('#search').hidden = state.preview;
+  if (state.preview) state.selectedPilot = null;
   renderBody(vm);
   renderAircraft();
   renderClock();
@@ -382,7 +382,6 @@ function editor(): Editor | null {
   if (!sheetOpen()) return null;
   if (state.sheet === 'preview' && state.preview)
     return { online: [...state.previewSet].sort(), assign: state.previewAssign, set: setPreviewAssign };
-  if (editingDraft()) return { online: [...state.draft!.positions].sort(), assign: state.draft!.assign, set: setDraftAssign };
   return null;
 }
 
@@ -496,6 +495,7 @@ function pilotsNearby(): VatsimPilot[] {
 }
 
 function aircraftFeatures(): GeoJSON.FeatureCollection {
+  if (state.preview) return { type: 'FeatureCollection', features: [] };
   return {
     type: 'FeatureCollection',
     features: pilotsNearby().flatMap((p) => {
@@ -518,7 +518,6 @@ function renderBody(vm = viewModel()) {
 
 function renderClock() {
   const pill = $('#live');
-  if (editingDraft()) { pill.className = 'live preview'; pill.textContent = 'Plan draft'; return; }
   if (state.preview) { pill.className = 'live preview'; pill.textContent = 'Preview'; return; }
   if (state.error) { pill.className = 'live error'; pill.textContent = 'Feed error'; pill.title = state.error; return; }
   if (!state.lastFetch) { pill.className = 'live'; pill.textContent = 'Connecting…'; return; }
@@ -700,13 +699,17 @@ function renderPreviewSheet() {
 
 function renderPlansSheet() {
   $('#sheet-title').textContent = state.draft ? (state.draft.isNew ? 'New plan' : 'Edit plan') : 'Planned splits';
-  $('#sheet-sub').textContent = state.draft ? 'The map shows this draft while you edit.' : 'Visible to everyone · only you can edit';
+  $('#sheet-sub').textContent = state.draft ? 'The map stays live; the list below shows this plan.' : 'Visible to everyone · only you can edit';
   const sc = $('#preview-scroll');
   if (!state.admin) sc.innerHTML = renderLogin(state.busy, state.adminError);
   else if (state.draft)
     sc.innerHTML = renderPlanEditor({
       draft: state.draft, tz: state.tz, busy: state.busy, error: state.adminError,
-      assign: assignOpts([...state.draft.positions].sort(), state.draft.assign, 'plan-assign'),
+      // Owners as they would be if exactly the planned positions logged on; the map itself stays live.
+      assign: {
+        ...assignOpts([...state.draft.positions].sort(), state.draft.assign, 'plan-assign'),
+        ownership: computeOwnership(pieces, state.draft.positions, state.draft.assign),
+      },
     });
   else sc.innerHTML = renderPlanList({ plans: state.plans, tz: state.tz, busy: state.busy, error: state.adminError, now: Date.now() });
 }
@@ -902,8 +905,6 @@ function togglePreview(open: boolean) {
     closeMenu();
     if (location.hash === '#preview') history.replaceState(null, '', location.pathname + location.search);
   }
-  // A plan draft is only drawn while its sheet is open.
-  if (state.draft) recompute();
   renderEditHint();
 }
 
