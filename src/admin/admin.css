@@ -293,6 +293,21 @@ input[type='datetime-local'].field-inline { background: var(--fill-2); border-ra
 .selection-bar > span:first-child { flex: 1; }
 @keyframes rise { from { transform: translateY(16px); opacity: 0; } }
 
+/* Editor: sectors picked on the map, assigned with one tap on a position. */
+.pick-bar { flex-direction: column; align-items: stretch; gap: 8px; padding: 12px 14px; border-radius: 18px; }
+.pick-bar-head { display: flex; align-items: center; gap: 12px; }
+.pick-bar-head > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pick-bar-owners { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.pick-bar-owners .secondary { margin-right: 2px; }
+.owner-btn {
+  min-width: 38px; height: 30px; padding: 0 9px; border-radius: 8px; font-weight: 700; font-size: 13px;
+  font-variant-numeric: tabular-nums; color: #fff; background: var(--c, var(--grey));
+  transition: transform 0.12s var(--ease), filter 0.12s;
+}
+.owner-btn:hover { filter: brightness(1.08); }
+.owner-btn:active { transform: scale(0.94); }
+.owner-btn.sop { color: var(--label-2); background: var(--fill-2); font-weight: 600; }
+
 /* ─── alert + HUD ────────────────────────────────────────────────────────── */
 .alert-backdrop { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; background: rgba(0, 0, 0, 0.3); animation: fade 0.2s; }
 .alert {
