@@ -4,6 +4,18 @@
 .tracon-page .topbar .segmented { min-width: 240px; }
 @media (max-width: 760px) { .tracon-page .topbar-alt { display: none; } }
 
+/* ── Beta notice ─────────────────────────────────────────────────────────── */
+.beta-tag {
+  display: inline-block; margin-left: 4px; padding: 1px 6px; border-radius: 6px; vertical-align: 3px;
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; color: var(--orange);
+  background: color-mix(in srgb, var(--orange) 15%, transparent);
+}
+.beta-note {
+  margin: 0 16px 12px; padding: 8px 12px; border-radius: var(--radius-m); font-size: 12.5px; line-height: 1.35;
+  color: var(--label-2); background: color-mix(in srgb, var(--orange) 12%, transparent);
+}
+.beta-note b { color: var(--orange); }
+
 /* ── Altitude ────────────────────────────────────────────────────────────── */
 .alt-ctl { margin: 0 16px 12px; padding: 10px 12px 6px; border-radius: var(--radius-m); background: var(--cell); }
 .alt-head { display: flex; justify-content: space-between; align-items: baseline; font-size: 13px; font-weight: 600; color: var(--label-2); }

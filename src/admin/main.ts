@@ -174,6 +174,17 @@ function currentOwnership(): { own: Ownership; ids: string[] } | null {
 // ─── map pane ────────────────────────────────────────────────────────────────
 const showsMap = () => state.page === 'overview' || state.page === 'live' || state.page === 'editor';
 
+/** Can sectors be picked on the map right now (and handed to someone)? */
+function mapPickable(): boolean {
+  if (state.busy) return false;
+  if (state.page === 'live') return onlineIds().length > 0;
+  if (state.page === 'editor') return !!state.draft?.positions.size;
+  return false;
+}
+
+/** Ticked sectors in the stratum on screen. */
+const selectedHere = () => [...state.selected].filter((k) => k.startsWith(`${state.stratum}-`));
+
 function ownerLabels(own: Ownership): GeoJSON.FeatureCollection {
   const features: GeoJSON.Feature[] = [];
   for (const st of STRATA) {
@@ -203,6 +214,17 @@ function updateMap() {
       view!.setNeighborsVisible(false);
       updateMap();
     });
+    // Click a sector on the map to tick it, same as its checkbox in the list.
+    view.map.on('click', 'pieces-fill', (e) => {
+      const p = e.features?.[0]?.properties as Piece | undefined;
+      if (!p || !mapPickable()) return;
+      const key = sectorKey(p.stratum, p.sector);
+      if (state.selected.has(key)) state.selected.delete(key);
+      else state.selected.add(key);
+      rerender();
+    });
+    view.map.on('mousemove', 'pieces-fill', () => { view!.map.getCanvas().style.cursor = mapPickable() ? 'pointer' : ''; });
+    view.map.on('mouseleave', 'pieces-fill', () => { view!.map.getCanvas().style.cursor = ''; });
     new ResizeObserver(() => view?.map.resize()).observe($('#map'));
   }
   const cur = currentOwnership();
@@ -210,6 +232,7 @@ function updateMap() {
   colors.update(cur.ids);
   if (view) {
     view.setStratum(state.stratum);
+    view.setSelected(mapPickable() ? selectedHere() : []);
     const pc = new Map<string, string | null>();
     for (const [pid, owner] of cur.own.owners) pc.set(pid, colors.get(owner));
     view.setPieceColors(pc);
@@ -217,7 +240,7 @@ function updateMap() {
   }
   const title = state.page === 'editor' ? 'Event preview' : 'Live now';
   $('#map-head').innerHTML = `<div class="map-title"><b>${title}</b><span class="secondary">${STRATUM_INFO[state.stratum].altitude}</span></div>${segmented('stratum', STRATA.map((s) => [s, STRATUM_INFO[s].label]), state.stratum)}
-    <div class="map-actions"><button type="button" class="capsule" data-export="one" title="Save this stratum as a PNG image">${icons.download}<span>Save Image</span></button><button type="button" class="capsule" data-export="all" title="Low, High and Ultra High side by side">${icons.download}<span>All Strata</span></button></div>`;
+    <div class="map-actions"><button type="button" class="capsule" data-export="one" title="Save the map as shown, with just each position's primary sector label">${icons.download}<span>Save Image</span></button><button type="button" class="capsule" data-export="all" title="Low, High and Ultra High side by side">${icons.download}<span>All Strata</span></button></div>`;
   const uncovered = SECTORS.filter((s) => s.stratum === state.stratum && !cur.own.sectorOwners.get(sectorKey(s.stratum, s.id))?.size);
   const legend = cur.ids
     .map((id) => {
@@ -262,7 +285,21 @@ function wrapText(g: CanvasRenderingContext2D, text: string, maxW: number): stri
   return lines;
 }
 
-/** PNG of the map pane: title, one or all strata, and who works what (with the public notes). */
+async function download(cv: HTMLCanvasElement, name: string) {
+  const blob = await new Promise<Blob | null>((r) => cv.toBlob(r, 'image/png'));
+  if (!blob) throw new Error('the browser could not encode the PNG');
+  const a = document.createElement('a');
+  a.download = `${name.replace(/[\\/:*?"<>|]+/g, '').trim() || 'ZME split'}.png`;
+  a.href = URL.createObjectURL(blob);
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  hud('Image saved');
+}
+
+/**
+ * Save Image: the map exactly as framed on screen, with only each position's label (no sector numbers).
+ * All Strata: Low, High and Ultra High side by side on a card with who works what (and the public notes).
+ */
 async function exportImage(all: boolean) {
   const cur = currentOwnership();
   if (!view || !cur) return;
@@ -271,6 +308,8 @@ async function exportImage(all: boolean) {
   const keep = state.stratum;
   const strata = all ? STRATA : [state.stratum];
   const shots: HTMLCanvasElement[] = [];
+  view.setSectorLabelsVisible(false);
+  view.setSelected([]);
   try {
     for (const st of strata) {
       view.setStratum(st);
@@ -278,8 +317,16 @@ async function exportImage(all: boolean) {
     }
   } finally {
     view.setStratum(keep);
+    view.setSectorLabelsVisible(true);
+    updateMap();
     btns.forEach((b) => (b.disabled = false));
   }
+
+  const editing = state.page === 'editor' && state.draft;
+  const plan = editing ? null : activePlan(state.plans);
+  const d = state.draft;
+  const title = editing && d ? d.name.trim() || 'Untitled event' : plan ? `Live now · ${plan.name}` : 'Live now';
+  if (!all) return download(shots[0], `${title} - ${STRATUM_INFO[keep].label}`);
 
   const dark = darkQuery.matches;
   const C = dark
@@ -295,8 +342,6 @@ async function exportImage(all: boolean) {
   const width = Math.max(u(640), pad * 2 + mw * shots.length + gap * (shots.length - 1));
 
   // Who works what, with the (public) position notes.
-  const editing = state.page === 'editor' && state.draft;
-  const plan = editing ? null : activePlan(state.plans);
   const notes = editing ? state.draft!.notes : new Map(Object.entries(plan?.notes ?? {}));
   const rows = cur.ids.map((id) => {
     const ks = cur.own.positionSectors.get(id) ?? [];
@@ -329,8 +374,6 @@ async function exportImage(all: boolean) {
   g.fillRect(0, 0, width, height);
 
   // Header
-  const d = state.draft;
-  const title = editing && d ? d.name.trim() || 'Untitled event' : plan ? `Live now · ${plan.name}` : 'Live now';
   const sub = editing && d
     ? Number.isFinite(d.start) && Number.isFinite(d.end) ? `${fmtRange(d.start, d.end, 'utc')}   ·   ${fmtRange(d.start, d.end, 'local')}` : ''
     : `As of ${fmtTime(Date.now(), 'utc')}   ·   ${cur.ids.length} position${cur.ids.length === 1 ? '' : 's'} online`;
@@ -414,15 +457,7 @@ async function exportImage(all: boolean) {
   g.font = `${u(11.5)}px ${FONT}`;
   g.fillText(`ZME Split Explorer  ·  For VATSIM use only  ·  Generated ${fmtTime(Date.now(), 'utc')}`, pad, y + u(26));
 
-  const blob = await new Promise<Blob | null>((r) => cv.toBlob(r, 'image/png'));
-  if (!blob) throw new Error('the browser could not encode the PNG');
-  const a = document.createElement('a');
-  const safe = title.replace(/[\\/:*?"<>|]+/g, '').trim() || 'ZME split';
-  a.download = `${safe} - ${all ? 'all strata' : STRATUM_INFO[keep].label}.png`;
-  a.href = URL.createObjectURL(blob);
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
-  hud('Image saved');
+  await download(cv, `${title} - all strata`);
 }
 
 // ─── small Apple controls ────────────────────────────────────────────────────
@@ -543,7 +578,7 @@ function renderLive() {
   const ids = onlineIds();
   const own = pieces.length ? liveOwnership() : null;
   const edits = new Map(liveEdits());
-  const sel = [...state.selected].filter((k) => k.startsWith(`${state.stratum}-`));
+  const sel = selectedHere();
   const enabled = ids.length > 0 && !state.busy;
   const options = (cur: string | undefined, placeholder?: string) =>
     `${placeholder ? `<option value="-" selected disabled>${esc(placeholder)}</option>` : ''}<option value="" ${!placeholder && !cur ? 'selected' : ''}>Auto (SOP)</option>${[...new Set([...ids, ...(cur ? [cur] : [])])]
@@ -576,7 +611,7 @@ function renderLive() {
       <div class="list-tools">${searchField('live', 'Search sectors: 22 63, Memphis, 132.55')}
         <button type="button" class="link-btn" data-bulk-on="sel" ${enabled ? '' : 'disabled'}>Select Shown</button></div>
       <div class="group">${rows}<div class="cell empty filter-empty" hidden>No matching sectors.</div></div>
-      <p class="footnote">Tick sectors to hand several over at once. Shift-click selects a range, like files in Finder.</p>
+      <p class="footnote">Tick sectors, or click them on the map, to hand several over at once. Shift-click selects a range, like files in Finder.</p>
     </div>
     ${sel.length ? `<div class="selection-bar"><span><b>${sel.length}</b> selected</span>
       <span class="popup filled"><select data-bulk-assign ${enabled ? '' : 'disabled'}>${options(undefined, 'Assign to…')}</select></span>
@@ -647,6 +682,7 @@ function renderEditor() {
   const d = state.draft!;
   const own = pieces.length ? draftOwnership(d) : null;
   const ids = [...d.positions].sort();
+  const sel = selectedHere();
   const dur = Number.isFinite(d.end - d.start) && d.end > d.start ? (d.end - d.start) / 3_600_000 : null;
   const time = (id: string, label: string, ms: number) => `<label class="cell">
       <div class="cell-main">${label}<div class="secondary small" id="${id}-other">${Number.isFinite(ms) ? esc(fmtTime(ms, state.tz === 'utc' ? 'local' : 'utc')) : ''}</div></div>
@@ -708,10 +744,14 @@ function renderEditor() {
     </div>
     <p class="footnote">Shift-click picks a range. Search takes several numbers at once, e.g. "22 63 46".</p>
     ${ids.length ? `<h2 class="section-title">Who Covers What</h2>
-      <p class="footnote top">Auto follows the SOP among the Auto positions; Pick Sectors makes a position cover exactly those.</p>
+      <p class="footnote top">Auto follows the SOP among the Auto positions; Pick Sectors makes a position cover exactly those. You can also click sectors on the map and give them to a position.</p>
       ${coverage}
       ${uncovered.length ? `<div class="banner warn">${icons.warn}<span>Uncovered: ${esc(uncovered.join(', '))}</span></div>` : '<div class="banner ok">' + icons.check + '<span>Every sector is covered.</span></div>'}` : ''}
     ${d.isNew ? '' : `<div class="group"><button type="button" class="cell action" data-dup="${d.id}">Duplicate Event</button><button type="button" class="cell action destructive" data-delete>Delete Event</button></div>`}
+    ${sel.length ? `<div class="selection-bar"><span><b>${sel.length}</b> selected on the map</span>
+      <span class="popup filled"><select data-bulk-assign><option value="-" selected disabled>Give to…</option><option value="">Auto (SOP)</option>${ids
+        .map((id) => `<option value="${id}">${id} ${esc(POSITIONS.get(id)?.name ?? '')}</option>`).join('')}</select></span>
+      <button type="button" class="link-btn" data-sel-clear>Done</button></div>` : ''}
     <div class="bottom-space"></div>`;
 }
 
@@ -847,6 +887,19 @@ function openDraft(plan?: Plan, copy = false) {
   navigate('editor', true);
 }
 
+/**
+ * Hand sectors picked on the map to one draft position (null: back to Auto / SOP).
+ * A position still on Auto switches to Pick Sectors and keeps what the SOP gave it, plus these.
+ */
+function giveSectors(d: Draft, keys: string[], pos: string | null) {
+  if (pos && !d.explicit.has(pos)) {
+    for (const k of draftOwnership(d).positionSectors.get(pos) ?? []) if (!d.assign.has(k)) d.assign.set(k, pos);
+    d.explicit.add(pos);
+  }
+  for (const k of keys) pos ? d.assign.set(k, pos) : d.assign.delete(k);
+  rerender();
+}
+
 function pruneDraft(d: Draft) {
   for (const [k, v] of d.assign) if (!d.positions.has(v)) d.assign.delete(k);
   for (const id of d.explicit) if (!d.positions.has(id)) d.explicit.delete(id);
@@ -904,6 +957,7 @@ async function navigate(page: Page | 'root', force = false) {
     return;
   }
   if (state.page === 'editor' && page !== 'editor') state.draft = null;
+  if (page !== state.page) state.selected.clear();
   state.page = page;
   state.error = null;
   if (page !== 'editor') store.set('asx.admin.page', page);
@@ -1066,8 +1120,9 @@ function bind() {
     }
     if (t.dataset.liveAssign) return setLive([t.dataset.liveAssign], t.value || null);
     if (t.hasAttribute('data-bulk-assign') && t.value !== '-') {
-      const keys = [...state.selected].filter((k) => k.startsWith(`${state.stratum}-`));
+      const keys = selectedHere();
       state.selected.clear();
+      if (state.page === 'editor' && d) return giveSectors(d, keys, t.value || null);
       return setLive(keys, t.value || null);
     }
     if (t.id === 'live-hours') {
