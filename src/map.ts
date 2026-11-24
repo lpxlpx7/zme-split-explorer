@@ -32,6 +32,10 @@ export interface MapView {
   /** Points with stratum/id/name/freq: who works each block of airspace, always on screen. */
   setOwnerLabels(fc: GeoJSON.FeatureCollection): void;
   setTheme(dark: boolean): void;
+  /** Outline these sector keys (e.g. "HI-22") as picked. */
+  setSelected(keys: string[]): void;
+  /** Per-sector number labels; owner labels stay either way. */
+  setSectorLabelsVisible(v: boolean): void;
 }
 
 const EMPTY: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
@@ -77,12 +81,14 @@ export function createMap(
   let neighborsVisible = true;
   let aircraft = EMPTY;
   let ownerLabels = EMPTY;
+  let selected: string[] = [];
+  let sectorLabelsVisible = true;
 
   const install = () => {
     // Cool, low-contrast neutrals; colour is reserved for ownership.
     const t = isDark
-      ? { line: 'rgba(235,235,245,0.38)', boundary: '#E5E5EA', nLine: 'rgba(235,235,245,0.34)', artcc: 'rgba(152,170,196,0.55)', empty: 'rgba(142,142,147,0.10)', halo: '#1C1C1E', text: '#E5E5EA', muted: 'rgba(235,235,245,0.55)', plane: '#AEAEB2' }
-      : { line: 'rgba(60,60,67,0.40)', boundary: '#1D1D1F', nLine: 'rgba(60,60,67,0.34)', artcc: 'rgba(72,92,124,0.55)', empty: 'rgba(142,142,147,0.10)', halo: '#FFFFFF', text: '#1D1D1F', muted: 'rgba(60,60,67,0.6)', plane: '#636366' };
+      ? { line: 'rgba(235,235,245,0.38)', boundary: '#E5E5EA', nLine: 'rgba(235,235,245,0.34)', artcc: 'rgba(152,170,196,0.55)', empty: 'rgba(142,142,147,0.10)', halo: '#1C1C1E', text: '#E5E5EA', muted: 'rgba(235,235,245,0.55)', plane: '#AEAEB2', select: '#0A84FF' }
+      : { line: 'rgba(60,60,67,0.40)', boundary: '#1D1D1F', nLine: 'rgba(60,60,67,0.34)', artcc: 'rgba(72,92,124,0.55)', empty: 'rgba(142,142,147,0.10)', halo: '#FFFFFF', text: '#1D1D1F', muted: 'rgba(60,60,67,0.6)', plane: '#636366', select: '#007AFF' };
 
     if (!map.hasImage('plane')) map.addImage('plane', planeImage(), { sdf: true, pixelRatio: 2 });
     map.addSource('artccs', { type: 'geojson', data: data.artccs });
@@ -116,10 +122,14 @@ export function createMap(
       },
     });
     map.addLayer({ id: 'sectors-line', type: 'line', source: 'sectors', filter: fStratum, paint: { 'line-color': t.line, 'line-width': 1 } });
+    const fSel = selectedFilter(stratum, selected);
+    map.addLayer({ id: 'selected-fill', type: 'fill', source: 'sectors', filter: fSel, paint: { 'fill-color': t.select, 'fill-opacity': 0.22 } });
+    map.addLayer({ id: 'selected-line', type: 'line', source: 'sectors', filter: fSel, paint: { 'line-color': t.select, 'line-width': 2.5 } });
     map.addLayer({ id: 'boundary-line', type: 'line', source: 'boundary', filter: boundaryFilter(stratum), paint: { 'line-color': t.boundary, 'line-width': 2, 'line-opacity': 0.8 } });
     map.addLayer({
       id: 'sector-labels', type: 'symbol', source: 'labels', filter: fStratum, minzoom: 5.2,
-      layout: { 'text-field': ['get', 'sector'], 'text-font': FONT, 'text-size': ['interpolate', ['linear'], ['zoom'], 5.2, 11, 8, 14], 'text-allow-overlap': false },
+      layout: {
+        visibility: sectorLabelsVisible ? 'visible' : 'none', 'text-field': ['get', 'sector'], 'text-font': FONT, 'text-size': ['interpolate', ['linear'], ['zoom'], 5.2, 11, 8, 14], 'text-allow-overlap': false },
       paint: { 'text-color': t.text, 'text-halo-color': t.halo, 'text-halo-width': 1.4, 'text-opacity': 0.85 },
     });
     // Above the sector numbers, so where they collide the owner label wins.
@@ -174,6 +184,16 @@ export function createMap(
       map.setFilter('pieces-fill', ['all', f, ['!=', ['get', 'hidden'], true]] as FilterSpecification);
       for (const id of ['sectors-line', 'sector-labels', 'owner-labels', 'neighbors-fill', 'neighbors-line']) map.setFilter(id, f);
       map.setFilter('boundary-line', boundaryFilter(s));
+      for (const id of ['selected-fill', 'selected-line']) map.setFilter(id, selectedFilter(s, selected));
+    },
+    setSelected(keys) {
+      selected = keys;
+      if (!map.getLayer('selected-line')) return;
+      for (const id of ['selected-fill', 'selected-line']) map.setFilter(id, selectedFilter(stratum, keys));
+    },
+    setSectorLabelsVisible(v) {
+      sectorLabelsVisible = v;
+      if (map.getLayer('sector-labels')) map.setLayoutProperty('sector-labels', 'visibility', v ? 'visible' : 'none');
     },
     setPieceColors(colors) {
       pieces = withColors(data.pieces, 'pid', colors);
@@ -204,6 +224,9 @@ export function createMap(
 }
 
 const stratumFilter = (s: Stratum) => ['==', ['get', 'stratum'], s] as FilterSpecification;
+
+const selectedFilter = (s: Stratum, keys: string[]) =>
+  ['all', stratumFilter(s), ['in', ['concat', ['get', 'stratum'], '-', ['get', 'sector']], ['literal', keys]]] as FilterSpecification;
 
 /** LO has its own (larger) lateral boundary; HI and UH share one. */
 function boundaryFilter(s: Stratum): FilterSpecification {
