@@ -41,6 +41,26 @@ callsigns (positions are named instead) and no live adjacent-ARTCC controllers.
 
 The button next to Preview hides the left panel so the map fills the screen; a map button brings it back.
 
+## TRACON splits (BNA, MEM)
+
+`tracon.html` (served at `/tracon`, linked from the radar button on the main map) previews how Nashville
+and Memphis TRACON are split. Switch radar positions on (or pick a preset, or load who is online on
+VATSIM), choose the runway configuration (BNA: North, South, Runway 13, Runway 31; MEM: North, South)
+and drag the altitude slider. By default the configuration follows the real-world FAA D-ATIS from
+[atis.info](https://atis.info/api/KBNA) (`src/tracon/atis.ts` reads the arrival/departure runways out of
+the ATIS text; refreshed every 5 minutes); picking a configuration by hand stops following it. A single
+open final position covers all final airspace (BNA FRE/FRW; MEM ARF/ARM/ARN).
+Then every piece is coloured by the position that would work it at that altitude.
+Hover a piece (tap on a phone) for its full stack of owners. The setup stays in this browser.
+
+The pieces are polygonized from the STARS flow maps in CRC (`BNA_NORTH FLOW` …, `M03_NORTH`, `M03_SOUTH`,
+`M03_ARTCC BOUNDARY`); the dashed lines are first joined back into continuous lines (`tools/lib/dashes.ts`).
+Who owns each piece, and between which altitudes, is read off the SOP appendices (BNA ATCT/TRACON SOP
+Appendices 1–4, M03 TRACON SOP V3.0.2 Appendix 7-1) and kept in `tools/lib/tracon-defs.ts`. A closed
+position's airspace goes down its fallback chain (`src/tracon/data.ts`), which follows the CRC consolidation
+tree and the SOPs. The SOP figures and the video maps do not always agree right around the airports, so
+the smallest pieces there are approximate.
+
 ## Self-hosting and planned splits
 
 `server/index.ts` serves the built site and the API (`/api/plans`) from your own server. Events are kept in

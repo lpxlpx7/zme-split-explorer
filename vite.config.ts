@@ -29,7 +29,14 @@ export default defineConfig({
   preview: { host: true },
   build: {
     chunkSizeWarningLimit: 1200,
-    // Two pages: the public map and the admin panel (admin.html, served at /admin by server/index.ts).
-    rolldownOptions: { input: { main: resolve(import.meta.dirname, 'index.html'), admin: resolve(import.meta.dirname, 'admin.html') } },
+    // Three pages: the public map, the TRACON split preview (tracon.html, /tracon) and the admin panel
+    // (admin.html, /admin); server/index.ts serves the pretty URLs.
+    rolldownOptions: {
+      input: {
+        main: resolve(import.meta.dirname, 'index.html'),
+        tracon: resolve(import.meta.dirname, 'tracon.html'),
+        admin: resolve(import.meta.dirname, 'admin.html'),
+      },
+    },
   },
 });

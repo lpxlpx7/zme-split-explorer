@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#f2f2f7" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="TRACON Splits" />
+    <title>ZME TRACON Splits</title>
+    <link rel="icon" type="image/png" href="./favicon.png" />
+    <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
+  </head>
+  <body class="tracon-page">
+    <div id="map" role="application" aria-label="TRACON airspace map"></div>
+
+    <div class="topbar">
+      <div class="material topbar-inner">
+        <div class="segmented" id="facility" role="tablist" aria-label="TRACON" style="--n:2">
+          <span class="thumb"></span>
+          <button role="tab" data-f="BNA">Nashville</button>
+          <button role="tab" data-f="M03">Memphis</button>
+        </div>
+        <span class="topbar-alt" id="topbar-alt"></span>
+      </div>
+    </div>
+
+    <div class="map-buttons material" role="toolbar" aria-label="Map">
+      <button class="map-btn" data-action="show-panel" id="panel-show-btn" title="Show the panel" aria-label="Show panel" hidden></button>
+      <button class="map-btn" data-action="recenter" id="recenter-btn" title="Recenter on the TRACON" aria-label="Recenter"></button>
+    </div>
+
+    <aside id="panel" class="panel material" aria-label="TRACON splits">
+      <div class="panel-handle" id="panel-handle">
+        <div class="grabber" aria-hidden="true"></div>
+        <header class="panel-head">
+          <img class="app-icon" src="./zme_logo.png" alt="" width="40" height="40" />
+          <div class="titles">
+            <h1>TRACON Splits</h1>
+            <p><span class="live preview" id="subtitle">Preview · not live</span></p>
+          </div>
+          <a class="icon-btn tinted" href="./" id="zme-link" aria-label="ZME Center map" title="ZME Center map"></a>
+          <button class="icon-btn" data-action="hide-panel" id="panel-hide-btn" aria-label="Hide panel" title="Hide panel"></button>
+        </header>
+        <div class="alt-ctl">
+          <div class="alt-head">
+            <span>Altitude</span>
+            <input id="alt-val" type="text" inputmode="numeric" enterkeyhint="done" autocomplete="off" spellcheck="false"
+              aria-label="Altitude: 3000, 030, 30 or A030" title="Type an altitude: 3000, 030, 30 or A030" />
+          </div>
+          <input type="range" id="alt" min="0" max="160" step="5" value="70" aria-label="Altitude" />
+          <div class="alt-scale" id="alt-scale" aria-hidden="true"></div>
+        </div>
+      </div>
+
+      <div class="panel-scroll" id="panel-scroll">
+        <div class="segmented small" id="config" role="tablist" aria-label="Runway configuration"></div>
+        <div class="panel-body" id="body"></div>
+        <p class="fineprint" id="fineprint"></p>
+        <footer class="site-footer">
+          <span>© <span id="copy-year">2026</span> Jurina</span>
+          <span aria-hidden="true">·</span>
+          <a href="https://github.com/lpxlpx7/zme-split-explorer" target="_blank" rel="noopener">Open source on GitHub</a>
+          <span aria-hidden="true">·</span>
+          <a href="https://github.com/lpxlpx7/zme-split-explorer/blob/main/LICENSE" target="_blank" rel="noopener">GPL-3.0</a>
+        </footer>
+      </div>
+    </aside>
+
+    <div id="tooltip" class="tooltip material" hidden></div>
+    <div id="piece-card" class="aircraft-card material" hidden></div>
+
+    <script type="module" src="/src/tracon/main.ts"></script>
+  </body>
+</html>
