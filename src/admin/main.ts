@@ -748,10 +748,12 @@ function renderEditor() {
       ${coverage}
       ${uncovered.length ? `<div class="banner warn">${icons.warn}<span>Uncovered: ${esc(uncovered.join(', '))}</span></div>` : '<div class="banner ok">' + icons.check + '<span>Every sector is covered.</span></div>'}` : ''}
     ${d.isNew ? '' : `<div class="group"><button type="button" class="cell action" data-dup="${d.id}">Duplicate Event</button><button type="button" class="cell action destructive" data-delete>Delete Event</button></div>`}
-    ${sel.length ? `<div class="selection-bar"><span><b>${sel.length}</b> selected on the map</span>
-      <span class="popup filled"><select data-bulk-assign><option value="-" selected disabled>Give to…</option><option value="">Auto (SOP)</option>${ids
-        .map((id) => `<option value="${id}">${id} ${esc(POSITIONS.get(id)?.name ?? '')}</option>`).join('')}</select></span>
-      <button type="button" class="link-btn" data-sel-clear>Done</button></div>` : ''}
+    ${sel.length ? `<div class="selection-bar pick-bar">
+      <div class="pick-bar-head"><span><b>${sel.length}</b> sector${sel.length > 1 ? 's' : ''} · ${sel.map((k) => k.slice(3)).join(' ')}</span>
+        <button type="button" class="link-btn" data-sel-clear>Done</button></div>
+      <div class="pick-bar-owners"><span class="secondary small">Assign to</span>${ids
+        .map((id) => `<button type="button" class="owner-btn" style="--c:${colors.get(id)}" data-give="${id}" title="${esc(`${id} ${POSITIONS.get(id)?.name ?? ''}`)}">${id}</button>`).join('')}
+        <button type="button" class="owner-btn sop" data-give="" title="Back to Auto (SOP)">SOP</button></div></div>` : ''}
     <div class="bottom-space"></div>`;
 }
 
@@ -1027,6 +1029,12 @@ function bind() {
     const off = el('data-bulk-off')?.dataset.bulkOff;
     if (on || off) return applyBulk((on ?? off)!, visibleBoxes((on ?? off)!), !!on);
     if (el('data-sel-clear')) { state.selected.clear(); return rerender(); }
+    const give = el('data-give');
+    if (give && state.draft) {
+      const keys = selectedHere();
+      state.selected.clear();
+      return giveSectors(state.draft, keys, give.dataset.give || null);
+    }
 
     const exp = el('data-export')?.dataset.export;
     if (exp) return void exportImage(exp === 'all').catch((err) => { state.error = `Could not save the image: ${err instanceof Error ? err.message : err}`; rerender(); });
@@ -1122,7 +1130,6 @@ function bind() {
     if (t.hasAttribute('data-bulk-assign') && t.value !== '-') {
       const keys = selectedHere();
       state.selected.clear();
-      if (state.page === 'editor' && d) return giveSectors(d, keys, t.value || null);
       return setLive(keys, t.value || null);
     }
     if (t.id === 'live-hours') {
