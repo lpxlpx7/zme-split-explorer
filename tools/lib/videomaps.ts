@@ -5,7 +5,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { read, type Geom } from './geom.ts';
+import { read, type Geom, type Pos } from './geom.ts';
 
 interface VideoMapEntry {
   id: string;
@@ -50,15 +50,19 @@ export class VideoMaps {
 
   /** All LineStrings in the given maps, as JSTS geometries. */
   lines(names: string[]): Geom[] {
-    const out: Geom[] = [];
+    return this.coords(names).map((c) => read({ type: 'LineString', coordinates: c }));
+  }
+
+  /** All LineStrings in the given maps, as raw lon/lat coordinate lists. */
+  coords(names: string[]): Pos[][] {
+    const out: Pos[][] = [];
     for (const n of names) {
       const fc = readJSON<GeoJSON.FeatureCollection>(this.file(n));
       for (const f of fc.features) {
         const g = f.geometry;
         if (!g) continue;
-        if (g.type === 'LineString' && g.coordinates.length > 1) out.push(read(g));
-        else if (g.type === 'MultiLineString')
-          for (const c of g.coordinates) if (c.length > 1) out.push(read({ type: 'LineString', coordinates: c }));
+        if (g.type === 'LineString' && g.coordinates.length > 1) out.push(g.coordinates as Pos[]);
+        else if (g.type === 'MultiLineString') for (const c of g.coordinates) if (c.length > 1) out.push(c as Pos[]);
       }
     }
     return out;

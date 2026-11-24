@@ -16,13 +16,16 @@ import { buildNeighbors } from './lib/neighbors.ts';
 import { detailedFacility, fetchVg, firOutlines, type VgFacility, type VgFile } from './lib/vatglasses.ts';
 import { VideoMaps, defaultCrcDir } from './lib/videomaps.ts';
 import { ALL_MAPS, MAPS, buildZme } from './lib/zme.ts';
+import { assign, configFaces, traconBoundary } from './lib/tracon.ts';
+import { TRACONS, TRACON_MAPS } from './lib/tracon-defs.ts';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const OUT_DIR = path.join(ROOT, 'public', 'data');
 const CACHE_DIR = path.join(ROOT, 'node_modules', '.cache', 'vatglasses');
 const META = 'meta.json';
 /** Bump when the output format changes so `npm run dev` rebuilds. */
-const FORMAT = 2;
+const FORMAT = 3;
+const SOURCE_MAPS = [...ALL_MAPS, ...TRACON_MAPS];
 
 /** ZME's neighbours: [id, VATGlasses folder (detailed data) or null (outline only from nodata.json)]. */
 const NEIGHBORS: [string, string | null][] = [
@@ -60,7 +63,7 @@ const write = (name: string, data: unknown) => fs.writeFileSync(path.join(OUT_DI
 export function isStale(crcDir = defaultCrcDir()): boolean {
   let sources: number;
   try {
-    sources = new VideoMaps(crcDir).mtime(ALL_MAPS);
+    sources = new VideoMaps(crcDir).mtime(SOURCE_MAPS);
   } catch {
     return false;
   }
@@ -154,7 +157,32 @@ export async function buildData({ crcDir = defaultCrcDir(), refresh = false, log
     })),
   });
 
-  const meta: Meta = { format: FORMAT, sources: vm.mtime(ALL_MAPS), builtAt: new Date().toISOString() };
+  // ── TRACONs (BNA, M03) ────────────────────────────────────────────────────
+  write('tracon.json', {
+    facilities: TRACONS.map((t) => {
+      const boundary = traconBoundary(vm, t);
+      return {
+        id: t.id,
+        name: t.name,
+        boundary: rounded(boundary.getBoundary(), 5),
+        configs: t.configs.map((c) => {
+          const pieces = assign(configFaces(vm, boundary, c), c, (m) => log(`${t.id} ${m}`));
+          log(`${t.id} ${c.name}: ${pieces.length} pieces`);
+          return {
+            id: c.id,
+            name: c.name,
+            pieces: fc(pieces.map((p, i) => ({
+              type: 'Feature',
+              properties: { pid: `${t.id}-${c.id}-${i}`, layers: p.layers, label: interiorXY(polygons(p.g).sort((x, y) => y.getArea() - x.getArea())[0]).map((v) => Math.round(v * 1e5) / 1e5) },
+              geometry: rounded(p.g, 5),
+            }))),
+          };
+        }),
+      };
+    }),
+  });
+
+  const meta: Meta = { format: FORMAT, sources: vm.mtime(SOURCE_MAPS), builtAt: new Date().toISOString() };
   write(META, meta);
   // The old CNTR-line context layer is superseded by artccs.geojson.
   fs.rmSync(path.join(OUT_DIR, 'neighbors.geojson'), { force: true });

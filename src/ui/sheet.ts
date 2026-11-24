@@ -124,6 +124,8 @@ export class BottomSheet {
   private start(y: number, e?: PointerEvent) {
     if (!MOBILE.matches) return;
     if (e && e.pointerType === 'mouse' && e.button !== 0) return;
+    // Fields in the handle (search box, altitude slider/box) keep their own gestures.
+    if (e && (e.target as HTMLElement).closest('input, textarea, select')) return;
     this.drag = { startY: y, startVisible: this.visible, samples: [{ y, t: performance.now() }], moved: false };
   }
 

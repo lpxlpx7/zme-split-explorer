@@ -187,6 +187,7 @@ async function init() {
 function setupChrome() {
   $('#copy-year').textContent = String(new Date().getFullYear());
   $('#preview-btn').innerHTML = icons.sliders;
+  $('#tracon-link').innerHTML = icons.radar;
   $('#plans-btn').innerHTML = icons.calendar;
   $('#recenter-btn').innerHTML = icons.location;
   $('#panel-hide-btn').innerHTML = icons.sidebar;
